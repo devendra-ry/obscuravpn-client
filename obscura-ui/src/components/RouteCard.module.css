@@ -1,0 +1,113 @@
+.card {
+  width: 100%;
+  max-width: 460px;
+}
+
+.row {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  border-radius: var(--mantine-radius-md);
+}
+
+.clickable {
+  cursor: pointer;
+}
+
+.clickable:hover {
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-5));
+}
+
+/* Left column: the node (icon or flag) with the route line above and below it. */
+.rail {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  flex: none;
+}
+
+.line {
+  position: absolute;
+  left: 50%;
+  width: 3px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-3));
+}
+
+/* Mantine expands light-dark() above into an extra dark-scheme rule; this one must beat both. */
+:root .line.lineConnected {
+  background: var(--mantine-color-green-6);
+}
+
+.lineUp {
+  top: 0;
+  height: calc(50% - 22px);
+}
+
+.lineDown {
+  bottom: 0;
+  height: calc(50% - 22px);
+}
+
+.endLineUp {
+  top: 0;
+  height: calc(50% - 12px);
+}
+
+.endLineDown {
+  bottom: 0;
+  height: calc(50% - 12px);
+}
+
+.flagNode {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 22px;
+  background: light-dark(var(--mantine-color-gray-1), var(--mantine-color-dark-5));
+}
+
+.flag {
+  display: flex;
+  width: 24px;
+  height: 16px;
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--mantine-color-default-border);
+}
+
+.flag > * {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.endNode {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  color: var(--mantine-color-dimmed);
+}
+
+.body {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 0;
+}
+
+.chevron {
+  display: flex;
+  align-items: center;
+  padding-right: 10px;
+  color: var(--mantine-color-dimmed);
+}

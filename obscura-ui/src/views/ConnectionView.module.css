@@ -12,6 +12,12 @@
     width: 100%;
 }
 
+/* Route layout (Windows): the route card and stats card may not fit a short window, so the content scrolls. */
+.routeContent {
+    overflow-y: auto;
+    padding-bottom: var(--mantine-spacing-xl);
+}
+
 .deco {
     position: fixed;
     inset: 0;

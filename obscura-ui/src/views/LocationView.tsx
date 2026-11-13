@@ -1,22 +1,22 @@
-import { Accordion, ActionIcon, Anchor, Button, Card, Divider, Flex, Grid, Group, Loader, SegmentedControl, Space, Stack, Text, TextInput, ThemeIcon, Title, useMantineTheme } from '@mantine/core';
+import { Accordion, ActionIcon, Anchor, Button, Card, Divider, Flex, Grid, Group, Loader, Space, Stack, Text, TextInput, ThemeIcon, Title, useMantineTheme } from '@mantine/core';
 import { useInterval } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { t } from 'i18next';
-import { MouseEvent, ReactNode, useContext, useMemo, useState } from 'react';
+import { MouseEvent, useContext, useMemo, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import { BsPin, BsPinFill, BsSearch, BsShieldFillCheck, BsShieldFillExclamation } from 'react-icons/bs';
 import * as commands from '../bridge/commands';
 import { CONNECT_REQUIRES_ONLINE, IS_HANDHELD_DEVICE } from '../bridge/SystemProvider';
-import { accountIsExpired, Exit, getContinent, getCountry, getExitCountry } from '../common/api';
+import { accountIsExpired, Exit, getContinent, getExitCountry } from '../common/api';
 import { AppContext, ConnectionInProgress, getCityFromArgs, getCityFromStatus, NEVPNStatus } from '../common/appContext';
 import commonClasses from '../common/common.module.css';
-import { continentCmp, exitCityEquals, exitLocation, exitsSortComparator } from '../common/exitUtils';
+import { exitCityEquals, exitLocation, exitsSortComparator } from '../common/exitUtils';
 import { KeyedSet } from '../common/KeyedSet';
 import { NotificationId } from '../common/notifIds';
 import { useAsync } from '../common/useAsync';
 import { useExitList } from '../common/useExitList';
-import { useRelayList } from '../common/useRelayList';
-import { countryName, HAS_TUNNEL_OPTIONS, LocationSide, relaySelectorEquals, takePendingLocationSide } from '../common/tunnelOptions';
+import { HAS_TUNNEL_OPTIONS, takePendingLocationSide } from '../common/tunnelOptions';
+import LocationPicker from './LocationPicker';
 import { fmtTime, normalizedIncludes } from '../common/utils';
 import BoltBadgeAuto from '../components/BoltBadgeAuto';
 import { MobileDrawer } from '../components/ConfirmationDialog';
@@ -32,15 +32,24 @@ import { fmtErrorI18n } from '../translations/i18n';
 import classes from './Location.module.css';
 
 export default function LocationView() {
+    const { appStatus } = useContext(AppContext);
+    if (HAS_TUNNEL_OPTIONS && appStatus.tunnelArgs !== undefined) {
+        // Ombra's Location page: exit or entry relay, search, fastest, pinned, then all countries.
+        return (
+            <Stack align='center' gap={10} className={classes.container}>
+                <LocationPicker initialSide={takePendingLocationSide()} />
+            </Stack>
+        );
+    }
+    return <OfficialLocationView />;
+}
+
+function OfficialLocationView() {
     const { t } = useTranslation();
     const { vpnConnected, vpnConnect, connectionInProgress, appStatus } = useContext(AppContext);
     const [searchQuery, setSearchQuery] = useState('');
     const searchQueryClean = searchQuery.trim();
     const theme = useMantineTheme();
-    // Exit or entry relay, as in Ombra. Only with a service that reports the stored tunnel args.
-    const hasEntrySide = HAS_TUNNEL_OPTIONS && appStatus.tunnelArgs !== undefined;
-    const [side, setSide] = useState<LocationSide>(takePendingLocationSide);
-    const showEntry = hasEntrySide && side === 'entry';
 
     const { exitList } = useExitList({
       periodS: 60,
@@ -179,7 +188,15 @@ export default function LocationView() {
         }
     }
 
-    const searchBox = (
+    return (
+        <Stack align='center' gap={10} className={classes.container}>
+            <VpnStatusCard />
+            {locations.length === 0 ? <NoExitServers /> :
+                <>
+                  <Group w='100%' justify='space-between'>
+                    <Title order={3} ta='left' fw={600}>
+                      {t('Available Locations')}
+                    </Title>
                     <TextInput
                       w={{ base: '100%', xs: 'auto' }}
                       placeholder={t('searchLocations')}
@@ -189,37 +206,9 @@ export default function LocationView() {
                       radius='md'
                       style={{ boxShadow: theme.shadows.sm }}
                     />
-    );
-
-    return (
-        <Stack align='center' gap={10} className={classes.container}>
-            <VpnStatusCard />
-            {showEntry || locations.length > 0 ? (
-                <>
-                  <Group w='100%' justify='space-between'>
-                    {hasEntrySide ? (
-                      <SegmentedControl
-                        radius='md'
-                        value={side}
-                        onChange={value => setSide(value as LocationSide)}
-                        data={[
-                          { value: 'exit', label: t('locationSideExit') },
-                          { value: 'entry', label: t('locationSideEntry') },
-                        ]}
-                      />
-                    ) : (
-                      <Title order={3} ta='left' fw={600}>
-                        {t('Available Locations')}
-                      </Title>
-                    )}
-                    {searchBox}
                   </Group>
-                  {showEntry && <Text c='dimmed' size='sm' w='100%' ta='left'>{t('entryRelayHint')}</Text>}
                   <Divider my='xs' w='100%' />
-                </>
-            ) : null}
-            {showEntry ? <EntryRelayList searchQuery={searchQueryClean} /> : locations.length === 0 ? <NoExitServers /> :
-                <>
+
                   {filteredLocations.length === 0 ? (
                     <Text c='dimmed' size='sm' mt='md'>{t('noLocationsFound')}</Text>
                   ) : (
@@ -281,134 +270,6 @@ function LocationCard({ exit, connected, showLastChosen = false, onSelect, toggl
                     </ActionIcon>
                 </Group>
             </Group>
-        </Card>
-    );
-}
-
-/** The entry relays, grouped like the exits: Fastest, then each country ("any in") and its cities and servers. */
-function EntryRelayList({ searchQuery }: { searchQuery: string }) {
-    const { t } = useTranslation();
-    const { appStatus, osStatus } = useContext(AppContext);
-    const { relayList } = useRelayList({ periodS: 60 });
-    const { showLoadingUI, execute: setTunnelArgs } = commands.useCommand({ command: commands.setTunnelArgs, showNotification: true });
-    const stored = appStatus.tunnelArgs;
-    if (stored === undefined) return null;
-    if (relayList === undefined) return <Loader mt='md' />;
-
-    const selected = stored.relay;
-    const connectedRelay = appStatus.vpnStatus.connected?.relay;
-    const disabled = showLoadingUI || osStatus.osVpnStatus === NEVPNStatus.Disconnecting;
-    const choose = (relay: commands.RelaySelector) => {
-        if (!disabled && !relaySelectorEquals(relay, selected)) void setTunnelArgs({ ...stored, relay });
-    };
-
-    const relays = relayList.filter(relay => !searchQuery || (
-        normalizedIncludes(searchQuery, relay.city_name) ||
-        normalizedIncludes(searchQuery, relay.city_code) ||
-        normalizedIncludes(searchQuery, relay.country_code) ||
-        normalizedIncludes(searchQuery, relay.id) ||
-        normalizedIncludes(searchQuery, countryName(relay.country_code))
-    ));
-    if (relays.length === 0) return <Text c='dimmed' size='sm' mt='md'>{t('noLocationsFound')}</Text>;
-
-    const continentOf = (countryCode: string) => getContinent(getCountry(countryCode));
-    const countries = new Map<string, commands.Relay[]>();
-    for (const relay of relays) {
-        countries.set(relay.country_code, [...(countries.get(relay.country_code) ?? []), relay]);
-    }
-    const sortedCountries = [...countries.entries()].sort(([left], [right]) =>
-        continentCmp(continentOf(left), continentOf(right)) || countryName(left).localeCompare(countryName(right)));
-
-    const rows = [];
-    if (!searchQuery) {
-        rows.push(<EntryCard key='any' title={t('relayFastest')} subtitle={t('relayFastestDescription')}
-            selected={relaySelectorEquals(selected, { any: {} })} connected={false} disabled={disabled}
-            onSelect={() => choose({ any: {} })} />);
-    }
-    const insertedContinents = new Set<string>();
-    for (const [countryCode, countryRelays] of sortedCountries) {
-        const continent = continentOf(countryCode);
-        if (!insertedContinents.has(continent)) {
-            insertedContinents.add(continent);
-            rows.push(<Text key={`continent-${continent}`} ta='left' w='100%' size='sm' c='gray' ml='sm' fw={600}>{t(`Continent${continent}`)}</Text>);
-        }
-        const cities = new Map<string, commands.Relay[]>();
-        for (const relay of countryRelays) {
-            cities.set(relay.city_code, [...(cities.get(relay.city_code) ?? []), relay]);
-        }
-        if (cities.size > 1) {
-            const country = { country: { country_code: countryCode } };
-            rows.push(<EntryCard key={`country-${countryCode}`} countryCode={countryCode}
-                title={t('relayAnyIn', { location: countryName(countryCode) })} subtitle={t('relayCount', { count: countryRelays.length })}
-                selected={relaySelectorEquals(selected, country)} connected={false} disabled={disabled}
-                onSelect={() => choose(country)} />);
-        }
-        const sortedCities = [...cities.values()].sort((left, right) => left[0]!.city_name.localeCompare(right[0]!.city_name));
-        for (const cityRelays of sortedCities) {
-            const first = cityRelays[0]!;
-            const city = { city: { country_code: countryCode, city_code: first.city_code } };
-            const connectedHere = connectedRelay?.country_code === countryCode && connectedRelay.city_code === first.city_code;
-            rows.push(
-                <EntryCard key={`city-${countryCode}-${first.city_code}`} countryCode={countryCode}
-                    title={first.city_name} subtitle={`${countryName(countryCode)} · ${t('relayCount', { count: cityRelays.length })}`}
-                    selected={relaySelectorEquals(selected, city)} connected={connectedHere} disabled={disabled}
-                    onSelect={() => choose(city)}>
-                    {cityRelays.length > 1 && (
-                        <Group gap={6} mt='xs'>
-                            {cityRelays.map(relay => {
-                                const server = { relay: { id: relay.id } };
-                                const isSelected = relaySelectorEquals(selected, server);
-                                return (
-                                    <Button key={relay.id} size='compact-xs' radius='xl' disabled={disabled}
-                                        variant={isSelected ? 'filled' : 'default'}
-                                        title={connectedRelay?.id === relay.id ? t('Connected') : undefined}
-                                        onClick={(e: MouseEvent) => { e.stopPropagation(); choose(server); }}>
-                                        {relay.id}{connectedRelay?.id === relay.id ? ' •' : ''}
-                                    </Button>
-                                );
-                            })}
-                        </Group>
-                    )}
-                </EntryCard>
-            );
-        }
-    }
-    return <>{rows}</>;
-}
-
-interface EntryCardProps {
-    countryCode?: string,
-    title: string,
-    subtitle: string,
-    selected: boolean,
-    connected: boolean,
-    disabled: boolean,
-    onSelect: () => void,
-    children?: ReactNode,
-}
-
-function EntryCard({ countryCode, title, subtitle, selected, connected, disabled, onSelect, children }: EntryCardProps) {
-    const { t } = useTranslation();
-    const cardClass = connected ? classes.locationCardConnected
-        : disabled ? classes.locationCardDisabled
-        : classes.locationCardNotConnected;
-    return (
-        <Card shadow='xs' className={cardClass} withBorder padding='xs' radius='md' w='100%'
-            title={selected ? undefined : t('entryRelayClickToChoose')} onClick={disabled ? undefined : onSelect}>
-            <Group justify='space-between' wrap='nowrap'>
-                <Group wrap='nowrap'>
-                    <Text size='2rem'>{countryCode ? <Flag countryCode={countryCode} h={20} /> : <BoltBadgeAuto fill='var(--mantine-color-orange-6)' />}</Text>
-                    <Flex direction='column'>
-                        <Text size='md'>{title}</Text>
-                        <Text c='dimmed' size='sm'>{subtitle}</Text>
-                    </Flex>
-                </Group>
-                <Group gap='xs'>
-                    {connected && <ObscuraChip>{t('Connected')}</ObscuraChip>}
-                    {selected && <ObscuraChip>{t('relaySelected')}</ObscuraChip>}
-                </Group>
-            </Group>
-            {children}
         </Card>
     );
 }

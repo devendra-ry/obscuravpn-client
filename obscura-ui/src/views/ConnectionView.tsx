@@ -3,21 +3,21 @@ import { useFocusTrap, useInterval, useToggle } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { FunctionComponent, ReactNode, useContext, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { BsChevronDown, BsChevronRight, BsPinFill } from 'react-icons/bs';
+import { BsChevronDown, BsPinFill } from 'react-icons/bs';
 import { IoIosEyeOff } from 'react-icons/io';
 import { MdLanguage, MdLaptopMac, MdOutlineWifiOff } from 'react-icons/md';
-import { ExitSelector, ExitSelectorCity, setNavigationView } from '../bridge/commands';
+import { ExitSelector, ExitSelectorCity } from '../bridge/commands';
 import { CONNECT_REQUIRES_ONLINE } from '../bridge/SystemProvider';
 import * as ObscuraAccount from '../common/accountUtils';
 import { accountIsExpired, Exit, getContinent, getExitCountry, useReRenderWhenExpired } from '../common/api';
-import { AppContext, ConnectionInProgress, getCityFromStatus, isConnecting, NavigationView, NEVPNStatus, PinnedLocation, TransportKind, useIsConnecting, useIsTransitioning } from '../common/appContext';
+import { AppContext, ConnectionInProgress, getCityFromStatus, isConnecting, NEVPNStatus, PinnedLocation, useIsConnecting, useIsTransitioning } from '../common/appContext';
 import commonClasses from '../common/common.module.css';
 import { exitCityEquals, exitLocation, exitsSortComparator } from '../common/exitUtils';
 import { KeyedSet } from '../common/KeyedSet';
 import { useExitList } from '../common/useExitList';
-import { useRelayList } from '../common/useRelayList';
-import { entryLabel, HAS_TUNNEL_OPTIONS, openLocationSideNext } from '../common/tunnelOptions';
-import { showErrorNotification } from '../common/utils';
+import { HAS_TUNNEL_OPTIONS } from '../common/tunnelOptions';
+import RouteCard from '../components/RouteCard';
+import TrafficStatsCard from '../components/TrafficStatsCard';
 import { useCookie } from '../common/utils';
 import BoltBadgeAuto from '../components/BoltBadgeAuto';
 import { CColorSchemeContext } from '../components/CachedColorScheme';
@@ -116,34 +116,72 @@ export default function Connection() {
         return t('connectToEnjoy');
     }
 
+    // Ombra's layout (Windows): the route card replaces the bottom status bar, so nothing overlaps it.
+    const routeLayout = HAS_TUNNEL_OPTIONS && appStatus.tunnelArgs !== undefined;
     return (
         <div className={classes.container}>
             <Deco />
             <LockInPromo />
-            <Stack align='center' gap={0} className={classes.content}>
-                <Space h={40} />
+            <Stack align='center' gap={0} className={`${classes.content} ${routeLayout ? classes.routeContent : ''}`}>
+                <Space h={routeLayout ? 24 : 40} />
                 <Mascot />
                 <Stack align='center' gap={primaryButtonShown ? 0 : 20} mt={primaryButtonShown ? 0 : 20} justify='space-around'>
                     <Title order={2} fw={600}>{getTitle()}</Title>
                     <Title order={4} ta='center' mt={5} mih='xl' fw={350} className={classes.subtitle}>{Subtitle()}</Title>
                 </Stack>
                 <Space h='xs' />
-                <PrimaryConnectButton />
-                <Space h='xs' />
-                {showLocationSelect && <LocationSelect />}
-                {showLocationSelect && HAS_TUNNEL_OPTIONS && appStatus.tunnelArgs !== undefined && <EntryHop />}
+                {routeLayout ? (
+                    // Ombra's connect screen: one button for the route, the route itself, and the live stats.
+                    <Stack align='center' gap='md' w='100%' px='md'>
+                        <RouteConnectButton />
+                        {vpnConnected && connectionInProgress === ConnectionInProgress.UNSET && (
+                            <Text size='sm' className={classes.checkMyConnection}><Anchor c='inherit' href={ObscuraAccount.CHECK_STATUS_WEBPAGE} underline='always'>{t('checkMyConnection')}</Anchor> <ExternalLinkIcon size={12} style={{ marginBottom: -1 }} /></Text>
+                        )}
+                        <RouteCard />
+                        {vpnConnected && <TrafficStatsCard />}
+                    </Stack>
+                ) : (
+                    <>
+                        <PrimaryConnectButton />
+                        <Space h='xs' />
+                        {showLocationSelect && <LocationSelect />}
+                    </>
+                )}
                 {
-                    vpnConnected && connectionInProgress === ConnectionInProgress.UNSET && <div className={classes.checkMyConnection}>
+                    !routeLayout && vpnConnected && connectionInProgress === ConnectionInProgress.UNSET && <div className={classes.checkMyConnection}>
                         <Space />
                         <Text className={classes.checkMyConnection}><Anchor c='inherit' href={ObscuraAccount.CHECK_STATUS_WEBPAGE} underline='always'>{t('checkMyConnection')}</Anchor> <ExternalLinkIcon size={12} style={{ marginBottom: -1 }} /></Text>
                     </div>
                 }
                 <div style={{ flexGrow: 1 }} />
-                <ConnectionProgressBar />
+                {!routeLayout && <ConnectionProgressBar />}
                 <Space />
             </Stack>
         </div>
     );
+}
+
+/** Connect to the route of the route card, cancel, or disconnect (Windows with tunnel options). */
+function RouteConnectButton() {
+  const { t } = useTranslation();
+  const theme = useMantineTheme();
+  const { vpnConnected, osStatus, vpnConnect, vpnDisconnect, appStatus, showOfflineUI } = useContext(AppContext);
+  const inConnectingState = useIsConnecting();
+  const accountInfo = appStatus.account?.account_info ?? null;
+  if (!vpnConnected && accountInfo !== null && accountIsExpired(accountInfo)) {
+    return <Button size='lg' radius='xl' w={BUTTON_WIDTH} component='a' href={ObscuraAccount.APP_ACCOUNT_TAB}>{t('ManageAccount')}</Button>;
+  }
+  const busy = inConnectingState || vpnConnected;
+  const disabled = osStatus.osVpnStatus === NEVPNStatus.Disconnecting
+    || (!busy && ((showOfflineUI && CONNECT_REQUIRES_ONLINE) || accountInfo === null));
+  const label = inConnectingState ? t('Cancel') : vpnConnected ? t('Disconnect') : t('Connect');
+  return (
+    <Button size='lg' radius='xl' w={BUTTON_WIDTH} className={commonClasses.button} disabled={disabled}
+      {...(busy && !disabled ? theme.other.buttonDisconnectProps : {})}
+      onClick={() => busy ? vpnDisconnect() : vpnConnect(appStatus.lastChosenExit ?? { any: {} })}>
+      {label}
+    </Button>
+  );
 }
 
 /**
@@ -581,40 +619,6 @@ function LocationSelect(): ReactNode {
                 <LocationConnectRightButton dropdownOpened={combobox.dropdownOpened} selectedCity={selectedCity} />
             </Flex>
         </>
-    );
-}
-
-const MODE_SHORT_LABEL = {
-    quic: 'tunnelModeStealthShort',
-    wireguardUdp: 'tunnelModeSpeedShort',
-    tcpTls: 'tunnelModeTcpTlsShort',
-} as const;
-
-/** The entry relay and protocol, under the exit picker. Opens the Location page on its Entry side. */
-function EntryHop() {
-    const { t } = useTranslation();
-    const { appStatus } = useContext(AppContext);
-    const { relayList } = useRelayList({ periodS: 3600 });
-    const stored = appStatus.tunnelArgs;
-    if (stored === undefined) return null;
-    const connected = appStatus.vpnStatus.connected;
-    const entry = connected?.relay
-        ? { countryCode: connected.relay.country_code, text: connected.relay.city_name }
-        : entryLabel(t, stored.relay, relayList);
-    const mode = connected
-        ? (connected.transport === TransportKind.WireguardUdp ? 'wireguardUdp' : connected.transport === TransportKind.TcpTls ? 'tcpTls' : 'quic')
-        : (stored.mode ?? 'quic');
-    const openEntry = () => {
-        openLocationSideNext('entry');
-        setNavigationView(NavigationView.Location).catch(e => showErrorNotification(t, e, 'navigationFailed'));
-    };
-    return (
-        <Button variant='subtle' color='gray' size='compact-sm' mt='xs' onClick={openEntry} title={t('hopChange')}
-            rightSection={<BsChevronRight size={12} />}>
-            <Text span size='sm' c='dimmed'>{t('locationSideEntry')}</Text>
-            <Text span size='sm' ml={6}>{entry.countryCode && <Flag countryCode={entry.countryCode} />} {entry.text}</Text>
-            <Text span size='sm' c='dimmed' ml={6}>· {t(MODE_SHORT_LABEL[mode])}</Text>
-        </Button>
     );
 }
 

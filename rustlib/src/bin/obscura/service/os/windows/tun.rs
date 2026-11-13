@@ -35,6 +35,9 @@ pub struct Tun {
     session: Arc<wintun::Session>,
     read_task: Mutex<Option<AbortOnDrop>>,
     dns_routes: Mutex<BTreeSet<IpAddr>>,
+    /// The MTU and addresses that this process last set on the adapter. Each one costs a `netsh` process (about 70 ms),
+    /// so a config with the same ones does not set them again.
+    applied_addresses: Mutex<Option<(u16, Ipv4Addr, Option<Ipv6Network>)>>,
 }
 
 impl Tun {
@@ -67,6 +70,7 @@ impl Tun {
             session: session.into(),
             read_task: Mutex::new(None),
             dns_routes: Mutex::new(BTreeSet::new()),
+            applied_addresses: Mutex::new(None),
         })
     }
 
@@ -193,11 +197,17 @@ impl Tun {
         // Attempt all config steps regardless of individual failures to minimize leaks until intentionally disconnecting.
         // E.g. DNS queries shouldn't leak because route setup failed.
         let mut result = Ok(());
-        result = result
-            .and(iphelper::set_mtu(&self.adapter, mtu, ipv6.is_some()).await)
-            .and(iphelper::set_ipv4_address(&self.adapter, ipv4).await);
-        if let Some(ipv6) = ipv6 {
-            result = result.and(iphelper::set_ipv6_address(&self.adapter, ipv6).await);
+        let addresses = (mtu, ipv4, ipv6);
+        if *self.applied_addresses.lock().unwrap() != Some(addresses) {
+            let mut applied = iphelper::set_mtu(&self.adapter, mtu, ipv6.is_some())
+                .await
+                .and(iphelper::set_ipv4_address(&self.adapter, ipv4).await);
+            if let Some(ipv6) = ipv6 {
+                applied = applied.and(iphelper::set_ipv6_address(&self.adapter, ipv6).await);
+            }
+            // After a failure the next config sets them again.
+            *self.applied_addresses.lock().unwrap() = applied.ok().map(|()| addresses);
+            result = result.and(applied);
         }
         result = result
             .and(iphelper::set_dns_servers(&self.adapter, dns).await)

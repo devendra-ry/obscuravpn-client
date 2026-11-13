@@ -18,6 +18,23 @@ button.row:disabled {
   opacity: 0.6;
 }
 
+/* A row button with its own action buttons (pin, expand) beside it. */
+.rowWrap {
+  display: flex;
+  align-items: stretch;
+}
+
+.rowWrap > button.row {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.actions {
+  flex: none;
+  padding-right: 14px;
+}
+
 button.indent {
   padding-left: 34px;
 }

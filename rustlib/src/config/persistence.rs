@@ -166,6 +166,15 @@ pub fn load_with_key(config_dir: &Path, key_store: &WgKeyStore, key: Option<&Con
     Ok(default_config)
 }
 
+/// Whether the config file of `config_dir` exists and is encrypted (Ombra patch P13).
+pub fn is_encrypted(config_dir: &Path) -> bool {
+    use std::io::Read;
+    let mut start = Vec::new();
+    fs::File::open(config_dir.join(CONFIG_FILE))
+        .and_then(|file| file.take(64).read_to_end(&mut start))
+        .is_ok_and(|_| sealed::is_sealed(&start))
+}
+
 const BACKUP_PREFIX: &str = "config-backup-";
 
 /// The name prefix of the `NamedTempFile` that a save writes before the rename.

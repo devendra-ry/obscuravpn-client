@@ -16,7 +16,7 @@ use windows::Win32::System::Services::{
     QueryServiceDynamicInformation, SERVICE_DYNAMIC_INFORMATION_LEVEL_START_REASON, SERVICE_START_REASON_AUTO, SERVICE_START_REASON_DELAYEDAUTO,
     SERVICE_START_REASON_DEMAND, SERVICE_START_REASON_RESTART_ON_FAILURE, SERVICE_START_REASON_TRIGGER, SERVICE_STATUS_HANDLE,
 };
-use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
+use windows_service::service::{PowerEventParam, ServiceControl,ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType};
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult, ServiceStatusHandle};
 use windows_service::{define_windows_service, service_dispatcher};
 
@@ -87,6 +87,12 @@ async fn run_service(config_dir: &str, log_persistence: Option<LogPersistence>) 
                     let _ = shutdown_tx.send(true);
                     ServiceControlHandlerResult::NoError
                 }
+                ServiceControl::PowerEvent(PowerEventParam::ResumeAutomatic | PowerEventParam::ResumeSuspend) => {
+                    // One stored permit: two resume events in a row give one wake.
+                    super::RESUMED.notify_one();
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::PowerEvent(_) => ServiceControlHandlerResult::NoError,
                 _ => ServiceControlHandlerResult::NotImplemented,
             }
         }
@@ -104,7 +110,7 @@ async fn run_service(config_dir: &str, log_persistence: Option<LogPersistence>) 
     let _ = handler_status_handle.set(status_handle);
     status_handle.set_service_status(status(
         ServiceState::Running,
-        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN | ServiceControlAccept::POWER_EVENT,
         ServiceExitCode::Win32(0),
         Duration::default(),
     ))?;

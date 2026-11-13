@@ -39,6 +39,8 @@ export default function TrafficStatsCard() {
   const last = useRef<{ stats: TrafficStats, at: number } | null>(null);
 
   const poll = async () => {
+    // No service calls for a window that nobody sees (minimized or in the tray).
+    if (document.hidden) return;
     try {
       const next = await getTrafficStats();
       const now = performance.now();

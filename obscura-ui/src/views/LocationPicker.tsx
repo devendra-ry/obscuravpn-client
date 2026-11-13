@@ -1,6 +1,6 @@
-import { ActionIcon, Card, Collapse, Divider, Group, SegmentedControl, Stack, Text, TextInput, UnstyledButton } from '@mantine/core';
+import { ActionIcon, Card, Center, Collapse, Divider, Group, Loader, SegmentedControl, Stack, Text, TextInput, UnstyledButton } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
-import { MouseEvent, ReactNode, useContext, useState } from 'react';
+import { ReactNode, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { BsCheck2, BsChevronDown, BsPin, BsPinFill, BsSearch, BsSpeedometer2 } from 'react-icons/bs';
 import * as commands from '../bridge/commands';
@@ -8,7 +8,7 @@ import { CONNECT_REQUIRES_ONLINE } from '../bridge/SystemProvider';
 import { accountIsExpired } from '../common/api';
 import { AppContext, ConnectionInProgress, NEVPNStatus } from '../common/appContext';
 import { NotificationId } from '../common/notifIds';
-import { countryName, LocationSide, relaySelectorEquals } from '../common/tunnelOptions';
+import { clearPendingLocationSide, countryName, LocationSide, peekPendingLocationSide, relaySelectorEquals } from '../common/tunnelOptions';
 import { useExitList } from '../common/useExitList';
 import { useRelayList } from '../common/useRelayList';
 import { normalizedIncludes } from '../common/utils';
@@ -53,9 +53,11 @@ function matches(query: string, country: Country, city?: City): boolean {
 }
 
 /** The Location page of Ombra: exit or entry relay, search, the fastest choice, pinned exits, then all countries. */
-export default function LocationPicker({ initialSide }: { initialSide: LocationSide }) {
+export default function LocationPicker() {
   const { t } = useTranslation();
-  const [side, setSide] = useState<LocationSide>(initialSide);
+  // The side that the Connection view asked for, read once at mount.
+  const [side, setSide] = useState<LocationSide>(peekPendingLocationSide);
+  useEffect(clearPendingLocationSide, []);
   const [query, setQuery] = useState('');
   const q = query.trim();
 
@@ -87,6 +89,13 @@ export default function LocationPicker({ initialSide }: { initialSide: LocationS
 
 function SideLabel({ active, text }: { active: boolean, text: string }) {
   return <Group gap={6} justify='center' wrap='nowrap'>{active && <BsCheck2 />}<span>{text}</span></Group>;
+}
+
+/** A list that has not loaded: a spinner, or the reason once the fetch failed. An empty list is not an error. */
+function ListPending({ error }: { error?: string }) {
+  return error
+    ? <Text c='red.7' size='sm' ml='xs' role='alert'>{error}</Text>
+    : <Center py='lg'><Loader size='sm' /></Center>;
 }
 
 function SectionLabel({ children }: { children: ReactNode }) {
@@ -126,31 +135,35 @@ function CityRow({ city, indent, selected, connected, disabled, onSelect, pinned
   const servers = t('relayCount', { count: city.servers.length });
   return (
     <>
-      <UnstyledButton className={`${classes.row} ${indent ? classes.indent : ''}`} onClick={onSelect} disabled={disabled}>
-        <span className={classes.leading}><span className={classes.flag}><Flag countryCode={city.country_code} h={21} /></span></span>
-        <Stack gap={0} className={classes.text}>
-          <Text size='md' fw={500}>{city.city_name}</Text>
-          <Text size='sm' c='dimmed'>
-            {countryName(city.country_code)} · {servers}
-            {connected && <Text span size='sm' c='green.7'> · {t('Connected')}</Text>}
-          </Text>
-        </Stack>
-        <Group gap={4} className={classes.trailing} wrap='nowrap'>
-          {selected && <BsCheck2 size={20} color='var(--mantine-color-orange-6)' />}
-          {onTogglePin && (
-            <ActionIcon variant='subtle' color={pinned ? 'orange' : 'gray'} aria-label={pinned ? t('unpinLocation') : t('pinLocation')}
-              onClick={(e: MouseEvent) => { e.stopPropagation(); onTogglePin(); }}>
-              {pinned ? <BsPinFill /> : <BsPin />}
-            </ActionIcon>
-          )}
-          {children && (
-            <ActionIcon variant='subtle' color='gray' aria-label={t('showServers')}
-              onClick={(e: MouseEvent) => { e.stopPropagation(); setOpen(o => !o); }}>
-              <BsChevronDown className={open ? classes.chevronOpen : classes.chevron} />
-            </ActionIcon>
-          )}
-        </Group>
-      </UnstyledButton>
+      {/* The pin and the chevron sit beside the row button, not inside it: a button cannot hold a button. */}
+      <div className={classes.rowWrap}>
+        <UnstyledButton className={`${classes.row} ${indent ? classes.indent : ''}`} onClick={onSelect} disabled={disabled}>
+          <span className={classes.leading}><span className={classes.flag}><Flag countryCode={city.country_code} h={21} /></span></span>
+          <Stack gap={0} className={classes.text}>
+            <Text size='md' fw={500}>{city.city_name}</Text>
+            <Text size='sm' c='dimmed'>
+              {countryName(city.country_code)} · {servers}
+              {connected && <Text span size='sm' c='green.7'> · {t('Connected')}</Text>}
+            </Text>
+          </Stack>
+          {selected && <span className={classes.trailing}><BsCheck2 size={20} color='var(--mantine-color-orange-6)' /></span>}
+        </UnstyledButton>
+        {(onTogglePin || children) && (
+          <Group gap={4} className={classes.actions} wrap='nowrap'>
+            {onTogglePin && (
+              <ActionIcon variant='subtle' color={pinned ? 'orange' : 'gray'} aria-label={pinned ? t('unpinLocation') : t('pinLocation')}
+                aria-pressed={pinned} onClick={onTogglePin}>
+                {pinned ? <BsPinFill /> : <BsPin />}
+              </ActionIcon>
+            )}
+            {children && (
+              <ActionIcon variant='subtle' color='gray' aria-label={t('showServers')} aria-expanded={open} onClick={() => setOpen(o => !o)}>
+                <BsChevronDown className={open ? classes.chevronOpen : classes.chevron} />
+              </ActionIcon>
+            )}
+          </Group>
+        )}
+      </div>
       {children && <Collapse in={open}>{children}</Collapse>}
     </>
   );
@@ -196,18 +209,22 @@ function useCountriesOpen(query: string) {
 function ExitList({ query }: { query: string }) {
   const { t } = useTranslation();
   const { appStatus, osStatus, showOfflineUI, accountInfo, vpnConnect, vpnConnected, connectionInProgress } = useContext(AppContext);
-  const { exitList } = useExitList({ periodS: 60 });
+  const { exitList, error } = useExitList({ periodS: 60 });
   const { isOpen, toggle } = useCountriesOpen(query);
-  const countries = groupByCountry(exitList ?? []);
+  if (exitList === undefined) return <ListPending error={error && t('failedToFetchExitServers')} />;
+  const countries = groupByCountry(exitList);
   const connectedExit = appStatus.vpnStatus.connected?.exit;
-  const lastChosen = appStatus.lastChosenExit;
+  // The stored exit, also "Fastest". `lastChosenExit` never holds "Fastest" once a city was chosen.
+  const chosen = appStatus.tunnelArgs?.exit ?? appStatus.lastChosenExit;
+  const fastestChosen = 'any' in chosen;
   const isAccountExpired = accountInfo ? accountIsExpired(accountInfo) : false;
   const disabled = osStatus.osVpnStatus === NEVPNStatus.Disconnecting || (showOfflineUI && CONNECT_REQUIRES_ONLINE) || isAccountExpired;
 
   const isConnectedCity = (c: City) => connectedExit?.country_code === c.country_code && connectedExit.city_code === c.city_code;
-  const isChosenCity = (c: City) => connectedExit
-    ? isConnectedCity(c)
-    : 'city' in lastChosen && lastChosen.city.country_code === c.country_code && lastChosen.city.city_code === c.city_code;
+  // A country or server choice (from the tray) has no row here, so the connected city stands in for it.
+  const isChosenCity = (c: City) => 'city' in chosen
+    ? chosen.city.country_code === c.country_code && chosen.city.city_code === c.city_code
+    : !fastestChosen && isConnectedCity(c);
   const pinned = (c: City) => appStatus.pinnedLocations.some(p => p.country_code === c.country_code && p.city_code === c.city_code);
 
   const choose = (exit: commands.ExitSelector, name: string) => {
@@ -218,7 +235,8 @@ function ExitList({ query }: { query: string }) {
     void vpnConnect(exit);
   };
   const chooseCity = (c: City) => {
-    if (!isConnectedCity(c)) choose({ city: { country_code: c.country_code, city_code: c.city_code } }, c.city_name);
+    // The connected city can still be chosen when "Fastest" picked it: that pins the city.
+    if (!(isConnectedCity(c) && isChosenCity(c))) choose({ city: { country_code: c.country_code, city_code: c.city_code } }, c.city_name);
   };
   const togglePin = (c: City) => {
     const rest = appStatus.pinnedLocations.filter(p => !(p.country_code === c.country_code && p.city_code === c.city_code));
@@ -238,7 +256,7 @@ function ExitList({ query }: { query: string }) {
     <>
       {!query && (
         <FastestCard title={t('fastestExit')} description={t('fastestExitDescription')} disabled={disabled}
-          selected={!connectedExit && 'any' in lastChosen} onSelect={() => choose({ any: {} }, t('fastestExit'))} />
+          selected={fastestChosen} onSelect={() => { if (!(fastestChosen && connectedExit)) choose({ any: {} }, t('fastestExit')); }} />
       )}
       {pinnedCities.length > 0 && (
         <>
@@ -263,12 +281,13 @@ function ExitList({ query }: { query: string }) {
 function EntryList({ query }: { query: string }) {
   const { t } = useTranslation();
   const { appStatus, osStatus } = useContext(AppContext);
-  const { relayList } = useRelayList({ periodS: 60 });
+  const { relayList, error } = useRelayList({ periodS: 60 });
   const { showLoadingUI, execute: setTunnelArgs } = commands.useCommand({ command: commands.setTunnelArgs, showNotification: true });
   const { isOpen, toggle } = useCountriesOpen(query);
   const stored = appStatus.tunnelArgs;
   if (stored === undefined) return null;
-  const countries = groupByCountry(relayList ?? []);
+  if (relayList === undefined) return <ListPending error={error && t('failedToFetchEntryRelays')} />;
+  const countries = groupByCountry(relayList);
   const connectedRelay = appStatus.vpnStatus.connected?.relay;
   const disabled = showLoadingUI || osStatus.osVpnStatus === NEVPNStatus.Disconnecting;
   const choose = (relay: commands.RelaySelector) => {

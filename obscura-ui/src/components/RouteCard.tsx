@@ -57,7 +57,7 @@ export default function RouteCard() {
     };
   } else {
     const city = getCityFromStatus(appStatus.vpnStatus)
-      ?? ('city' in appStatus.lastChosenExit ? appStatus.lastChosenExit.city : undefined);
+      ?? ('city' in stored.exit ? stored.exit.city : undefined);
     const cityName = city && exitList?.find(e => e.country_code === city.country_code && e.city_code === city.city_code)?.city_name;
     exit = city
       ? { countryCode: city.country_code, title: cityName ?? city.city_code.toUpperCase(), subtitle: placeSubtitle(city.country_code, cityName) }

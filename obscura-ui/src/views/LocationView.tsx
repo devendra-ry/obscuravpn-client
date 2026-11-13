@@ -15,7 +15,7 @@ import { KeyedSet } from '../common/KeyedSet';
 import { NotificationId } from '../common/notifIds';
 import { useAsync } from '../common/useAsync';
 import { useExitList } from '../common/useExitList';
-import { HAS_TUNNEL_OPTIONS, takePendingLocationSide } from '../common/tunnelOptions';
+import { HAS_TUNNEL_OPTIONS } from '../common/tunnelOptions';
 import LocationPicker from './LocationPicker';
 import { fmtTime, normalizedIncludes } from '../common/utils';
 import BoltBadgeAuto from '../components/BoltBadgeAuto';
@@ -37,7 +37,7 @@ export default function LocationView() {
         // Ombra's Location page: exit or entry relay, search, fastest, pinned, then all countries.
         return (
             <Stack align='center' gap={10} className={classes.container}>
-                <LocationPicker initialSide={takePendingLocationSide()} />
+                <LocationPicker />
             </Stack>
         );
     }

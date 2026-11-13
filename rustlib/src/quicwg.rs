@@ -862,7 +862,16 @@ const ICMP_ERRNOS: &[i32] = &[
     libc::EOPNOTSUPP,
     libc::EPROTO,
 ];
-#[cfg(not(any(target_os = "android", target_os = "linux")))]
+/// Windows reports these on a connected UDP socket, and std has no `ErrorKind` for them. WSAENETRESET: an ICMP "TTL
+/// expired" came back for an earlier datagram. WSAEMSGSIZE: a datagram was larger than the receive buffer and is lost.
+/// Neither says that the tunnel is dead. (Port unreachable is WSAECONNRESET, which is `ConnectionReset`.)
+#[cfg(target_os = "windows")]
+const ICMP_ERRNOS: &[i32] = &[WSAEMSGSIZE, WSAENETRESET];
+#[cfg(target_os = "windows")]
+const WSAEMSGSIZE: i32 = 10040;
+#[cfg(target_os = "windows")]
+const WSAENETRESET: i32 = 10052;
+#[cfg(not(any(target_os = "android", target_os = "linux", target_os = "windows")))]
 const ICMP_ERRNOS: &[i32] = &[];
 
 /// The first WireGuard handshake: `sends` initiations, 100 ms apart. A new initiation replaces the old one after each
@@ -1519,6 +1528,18 @@ mod tests {
     use crate::net::{new_quic, new_udp};
     use crate::test_relay::{CLIENT_TUNNEL_IP, EXIT_TUNNEL_IP, LossyPath, TestRelay, echo_reply, echo_request};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn icmp_errors_of_the_path_do_not_end_a_speed_tunnel() {
+        assert!(is_udp_path_error(&io::Error::from(io::ErrorKind::ConnectionReset)));
+        assert!(is_udp_path_error(&io::Error::from(io::ErrorKind::HostUnreachable)));
+        // Windows codes without an `ErrorKind` in std.
+        #[cfg(target_os = "windows")]
+        for code in [WSAENETRESET, WSAEMSGSIZE] {
+            assert!(is_udp_path_error(&io::Error::from_raw_os_error(code)), "{code}");
+        }
+        assert!(!is_udp_path_error(&io::Error::from(io::ErrorKind::PermissionDenied)));
+    }
 
     async fn start_quic(relay: &TestRelay, addr: SocketAddr, tuning: QuicTuning) -> QuicWgConnHandshaking {
         let endpoint = new_quic(new_udp(None).unwrap(), None, false).unwrap();

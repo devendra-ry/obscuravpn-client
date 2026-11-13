@@ -16,10 +16,14 @@ export function openLocationSideNext(side: LocationSide) {
   pendingLocationSide = side;
 }
 
-export function takePendingLocationSide(): LocationSide {
-  const side = pendingLocationSide ?? 'exit';
+/** Reads the side without clearing it, so a render stays free of side effects (StrictMode renders twice). */
+export function peekPendingLocationSide(): LocationSide {
+  return pendingLocationSide ?? 'exit';
+}
+
+/** Call from an effect once the Location page is mounted. */
+export function clearPendingLocationSide() {
   pendingLocationSide = undefined;
-  return side;
 }
 
 export function countryName(countryCode: string): string {

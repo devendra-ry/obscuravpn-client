@@ -652,13 +652,14 @@ public sealed partial class MainWindow : Window, INotifyPropertyChanged
         }
         catch
         {
-            Log.Warn($"Failed to parse bridge message: {messageJson}");
+            // Never the message itself: a login command holds the account number.
+            Log.Warn($"Failed to parse bridge message ({messageJson.Length} chars)");
             return;
         }
 
         if (message == null)
         {
-            Log.Warn($"Got null message: {messageJson}");
+            Log.Warn($"Got null message ({messageJson.Length} chars)");
             return;
         }
 

@@ -32,7 +32,7 @@ Nothing here was tested against the live relays or with a real connection on Win
 | Network handover (rebind QUIC or Speed mode on a network change) | P4 (D1, D2) | Ported, untested on Windows | Windows reports a change of the active adapter, and `Handover::decide` picks rebind or reconnect. No Windows test covers this. |
 | Config hygiene: temp files and backups deleted | P12, P22 | Ported | |
 | Smaller fixes: OS config errors, fragment copies, log rate limits | P20, P21, P23 | Ported | |
-| Encrypted `config.json` | P13 | Ported, inactive on Windows | The service passes no key, so the file stays plain text, as upstream. See (c). |
+| Encrypted `config.json` | P13 | Ported | Windows: the installed service encrypts it with a DPAPI-protected key in `config.key` (`service/os/windows/config_key.rs`). A console run keeps plain text and refuses an encrypted config. An older service cannot read the encrypted file and resets it. |
 | Referral command `apiUseReferralCode` | P16 | In the core, not in any UI | The core sends no referral on its own. |
 | `Status.tunnelArgs`, `Status.wgKeyMaxAgeSecs` | new | Added on this branch | These let the UI, the tray and auto-connect keep the protocol, entry relay and MTU. |
 | `setTunnelArgs` keeps the stored protocol, entry relay and MTU when a client sends only `exit` | new | Added on this branch | Before, a location switch from the official tray or an older UI reset the protocol to Stealth and the entry relay to Fastest. `TunnelArgsUpdate` in `manager.rs`. |
@@ -49,7 +49,7 @@ contract test is dropped because its fixture lives in the Ombra app.
 |---|---|---|
 | Protocol: Stealth (QUIC), Speed (WireGuard/UDP), TCP/TLS | Ported | Settings → Connection (`ConnectionSettings` in `obscura-ui/src/views/Settings.tsx`). A change reconnects a live tunnel. |
 | MTU options | Ported | Speed mode MTU (1280–1420) in the same card. "Force small MTU" for QUIC was already an experimental flag upstream. |
-| Entry relay choice: Fastest, country, city, server | Ported | Searchable select fed by the relay list. |
+| Entry relay choice: Fastest, country, city, server | Ported | Location page, "Entry relay" side (`obscura-ui/src/views/LocationPicker.tsx`), fed by the relay list. |
 | Key rotation interval | Ported | 30 days, daily, or at each connect. |
 | Exit choice: country, city, server, Fastest | Already upstream | Location view and tray. |
 | Favourites | Already upstream | Pinned locations. |

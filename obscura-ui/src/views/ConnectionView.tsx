@@ -178,7 +178,8 @@ function RouteConnectButton() {
   return (
     <Button size='lg' radius='xl' w={BUTTON_WIDTH} className={commonClasses.button} disabled={disabled}
       {...(busy && !disabled ? theme.other.buttonDisconnectProps : {})}
-      onClick={() => busy ? vpnDisconnect() : vpnConnect(appStatus.lastChosenExit ?? { any: {} })}>
+      // The stored exit, also "Fastest": `lastChosenExit` never holds "Fastest" once a city was chosen.
+      onClick={() => busy ? vpnDisconnect() : vpnConnect(appStatus.tunnelArgs?.exit ?? appStatus.lastChosenExit ?? { any: {} })}>
       {label}
     </Button>
   );

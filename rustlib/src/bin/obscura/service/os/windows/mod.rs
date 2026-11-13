@@ -1,3 +1,4 @@
+pub mod config_key;
 mod firewall;
 mod ipc;
 pub mod nrpt;
@@ -22,6 +23,10 @@ mod iphelper;
 /// Only referenced in release builds; debug builds don't pin the IPC pipe to a package identity.
 #[cfg(not(debug_assertions))]
 pub const PACKAGE_FAMILY_NAME: &str = env!("OBSCURA_PACKAGE_FAMILY_NAME");
+
+/// The machine resumed from sleep. Set by the service control handler, which runs outside the runtime; the service
+/// loop then wakes the manager, so a dead tunnel is found in about 2 s and a wait between connects ends.
+pub static RESUMED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub struct WindowsOsImpl {
     tun: Tun,

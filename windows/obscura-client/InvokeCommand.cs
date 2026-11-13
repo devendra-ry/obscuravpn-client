@@ -41,7 +41,8 @@ public class InvokeCommand
         }
         catch (JsonException ex)
         {
-            Log.Error($"Failed to parse command JSON: {ex.Message}: {commandJson}");
+            // Never the JSON itself: a login command holds the account number.
+            Log.Error($"Failed to parse command JSON ({commandJson.Length} chars): {ex.Message}");
             throw new ArgumentException("Failed to parse command", ex);
         }
         if (invoke == null) throw new ArgumentException("Failed to parse command");
@@ -61,8 +62,9 @@ public class InvokeCommand
         if (invoke.WindowsFix != null) return invoke.WindowsFix;
         if (invoke.CheckForUpdates != null) return invoke.CheckForUpdates;
         if (invoke.InstallUpdate != null) return invoke.InstallUpdate;
-        Log.Warn($"Unknown command: {commandJson}");
-        throw new NotSupportedException($"Unknown command: {commandJson}");
+        // Never the JSON itself: its arguments can hold the account number, and the UI logs this error.
+        Log.Warn($"Unknown command ({commandJson.Length} chars)");
+        throw new NotSupportedException("Unknown command");
     }
 }
 

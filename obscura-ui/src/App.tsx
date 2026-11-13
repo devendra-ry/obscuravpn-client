@@ -1,4 +1,4 @@
-import { AppShell, AppShellMain } from '@mantine/core';
+import { AppShell, AppShellMain, Button, Stack, Text } from '@mantine/core';
 import { useHotkeys, useThrottledValue } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { ReactNode, useContext, useEffect, useRef, useState } from 'react';
@@ -124,17 +124,29 @@ export default function () {
     }
   }
 
-  function notifyVpnError(errorEnum: string) {
+  function notifyVpnError(errorEnum: string, tunnelArgs?: commands.TunnelArgs) {
     // see enum JsVpnError in commands.swift
     if (errorEnum !== null) {
+      // Speed mode never falls back by itself, so the error offers the switch.
+      const switchToStealth = errorEnum === 'udpHandshakeFailed' && tunnelArgs !== undefined
+        ? () => {
+          notifications.hide(NotificationId.VPN_ERROR);
+          commands.setTunnelArgs({ ...tunnelArgs, mode: 'quic' }).catch(e => showErrorNotification(t, e, 'Error'));
+        }
+        : undefined;
       notifications.hide(NotificationId.VPN_ERROR);
       notifications.show({
         id: NotificationId.VPN_ERROR,
         withCloseButton: true,
         color: 'red',
         title: t('Error'),
-        message: <VpnError errorEnum={errorEnum} />,
-        autoClose: 15_000
+        message: (
+          <Stack gap='xs' align='flex-start'>
+            <Text size='sm'><VpnError errorEnum={errorEnum} /></Text>
+            {switchToStealth && <Button size='xs' onClick={switchToStealth}>{t('switchToStealth')}</Button>}
+          </Stack>
+        ),
+        autoClose: switchToStealth ? false : 15_000
       });
     }
   }
@@ -172,7 +184,7 @@ export default function () {
           console.error(`got error while connecting: ${connectError}`);
         }
         console.log(fmt`vpnStatus = ${vpnStatus}`);
-        notifyVpnError(connectError);
+        notifyVpnError(connectError, vpnStatus.connecting.tunnelArgs);
       }
     } else if (vpnStatus.disconnected !== undefined && !HAS_NE_VPN_STATUS) {
       setConnectionInProgress(ConnectionInProgress.UNSET);

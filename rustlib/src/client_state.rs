@@ -256,6 +256,15 @@ impl ClientStateHandle {
                         in_new_account_flow: config.in_new_account_flow,
                         ..Default::default()
                     };
+                    // The protocol, the entry relay, the Speed mode MTU and the key age are choices about the network,
+                    // not about the account, and no client applies them again after a login. The exit starts over.
+                    next.tunnel_args = TunnelArgs {
+                        exit: Default::default(),
+                        relay: config.tunnel_args.relay.clone(),
+                        mode: config.tunnel_args.mode,
+                        udp_mtu: config.tunnel_args.udp_mtu,
+                    };
+                    next.wg_key_max_age_secs = config.wg_key_max_age_secs;
                     if config.account_id.is_none() && config.tunnel_active {
                         // A login while a tunnel waits for it (always-on starts before the login): keep the tunnel
                         // and every setting of its target state (Ombra). Without this the TUN that blocks traffic
@@ -1267,6 +1276,31 @@ mod tests {
         assert!(client_state.borrow().mtu_floor_failed, "the same network with another hint");
         client_state.set_network_interface(Some(lo0(2, Some(1500))));
         assert!(!client_state.borrow().mtu_floor_failed, "another network");
+    }
+
+    #[test]
+    fn a_logout_keeps_the_connection_settings_and_forgets_the_exit() {
+        let dir = tempdir().unwrap();
+        let stored = TunnelArgs {
+            exit: ExitSelector::Exit { id: "NYC-001".into() },
+            relay: RelaySelector::Relay { id: "relay-1".into() },
+            mode: crate::manager::TunnelMode::WireguardUdp,
+            udp_mtu: Some(1400),
+        };
+        let config = Config {
+            account_id: Some(AccountId::from_string_unchecked("test-account".into())),
+            tunnel_args: stored.clone(),
+            wg_key_max_age_secs: Some(0),
+            ..Default::default()
+        };
+        config::save(dir.path(), &config).unwrap();
+        let client_state = client_state(dir.path());
+
+        client_state.set_account_id(None).unwrap();
+        let state = client_state.borrow();
+        assert_eq!(state.config().tunnel_args, TunnelArgs { exit: ExitSelector::Any {}, ..stored });
+        assert_eq!(state.config().wg_key_max_age_secs, Some(0));
+        assert!(!state.config().tunnel_active);
     }
 
     #[test]

@@ -50,7 +50,7 @@ fn initialize(env: &mut JNIEnv, j_config_dir: &JString, j_user_agent: &JString, 
     let config_dir = Utf8JavaStr::new(env, j_config_dir, "j_config_dir", "INsGbyhM")?;
     let user_agent = Utf8JavaStr::new(env, j_user_agent, "j_user_agent", "NXCS11u3")?;
     let log_dir = config_dir.as_path().join(RUST_LOG_DIR_NAME);
-    let log_persistence = crate::logging::init(tracing_android::layer("ObscuraNative")?, Some(&log_dir));
+    let log_persistence = crate::logging::init(tracing_android::layer("ObscuraNative")?, Some(&log_dir), false);
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .map_err(|_| anyhow::format_err!("failed to install crypto provider"))?;
@@ -60,6 +60,8 @@ fn initialize(env: &mut JNIEnv, j_config_dir: &JString, j_user_agent: &JString, 
         config_dir.as_path().into(),
         // TODO: https://linear.app/soveng/issue/OBS-2699/android-keychain-equivalent
         WgKeyStore::Plaintext,
+        // config.json stays plain text: the official Android app has no config key (Ombra patch P13 needs one).
+        None,
         user_agent.as_str().into(),
         os_impl.clone(),
         os_impl.network_interface(),
@@ -149,7 +151,9 @@ fn set_network_interface(env: &mut JNIEnv, global: &'static Global, j_name: &JSt
         tracing::error!(message_id = "qvDcd36g", "network interface index wasn't a positive u32");
         "network interface index wasn't a positive u32"
     })?;
-    global.os_impl.set_network_interface(Some(NetworkInterface { name, index }));
+    global
+        .os_impl
+        .set_network_interface(Some(NetworkInterface { name, index, network_handle: 0, mtu_hint: None }));
     Ok(())
 }
 

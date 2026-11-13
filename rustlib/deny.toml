@@ -1,0 +1,13 @@
+# cargo-deny settings (`cargo deny check advisories`). Each ignore entry needs a reason.
+[advisories]
+ignore = [
+    # zip 7.2.0: these are about extraction. The core only writes the debug bundle
+    # (debug_bundle/zipper.rs, ZipWriter) and never reads or extracts a zip archive.
+    { id = "RUSTSEC-2026-0367", reason = "extraction only; the core only writes zips" },
+    { id = "RUSTSEC-2026-0368", reason = "extraction only; the core only writes zips" },
+    { id = "RUSTSEC-2026-0369", reason = "extraction only; the core only writes zips" },
+    { id = "RUSTSEC-2026-0429", reason = "ZipArchive::extract only; the core only writes zips" },
+    # pin-utils 0.1.0 comes only through futures-util 0.3.31. The advisory is about its archived
+    # repository, not about a defect, and has no version with a fix.
+    { id = "RUSTSEC-2026-0441", reason = "unmaintained notice with no defect; a dependency of futures-util" },
+]

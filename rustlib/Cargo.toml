@@ -48,6 +48,8 @@ ipnetwork = { version = "0.21.1", features = ["serde"] }
 libadwaita = { version = "0.7", optional = true }
 libc = "0.2.178"
 quinn = "0.11.12"
+# Only for the `RttEstimator` type in the `Controller` trait (`src/bbr/`). quinn uses this crate; it adds no code.
+quinn-proto = "0.11.19"
 # Not used directly; sets a minimum for quinn's transitive dependency.
 # quinn-udp 0.5.6 regressed upload speeds on Android. This is fixed in 0.5.8 and later.
 # https://github.com/quinn-rs/quinn/issues/2042
@@ -59,6 +61,7 @@ semver = "1.0.27"
 serde = { version = "1.0.197", features = ["derive", "rc"] }
 serde_json = { version = "1.0.114", features = ["raw_value"] }
 serde_with = { version = "3.12", features = ["base64"] }
+smallvec = "1.15.2"
 socket2 = { version = "0.6.0", features = ["all"] }
 static_assertions = "1.1.0"
 strum = { version = "0.26.2", features = ["derive"] }
@@ -128,6 +131,7 @@ tracing-android = "0.2.0"
 [target.'cfg(target_os = "windows")'.dependencies]
 standard_paths = "2.1.0"
 windows = { version = "0.62", features = [
+    "Win32_Media",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WindowsFirewall",

@@ -17,10 +17,14 @@ use uuid::Uuid;
 
 use crate::config::CONFIG_FILE;
 use crate::config::Config;
+use crate::config::ConfigKey;
+use crate::config::ConfigLoadError;
 use crate::config::PinnedLocation;
 use crate::config::cached::ConfigCached;
 use crate::config::load;
+use crate::config::load_with_key;
 use crate::config::save;
+use crate::config::save_with_key;
 use crate::exit_selection::ExitSelector;
 use crate::wg_key_store::WgKeyStore;
 
@@ -77,6 +81,98 @@ fn load_invalid_json() {
     // Config file was eagerly updated to the default.
     let config_contents = fs::read_to_string(&file).unwrap();
     assert_ne!(config_contents, corrupted);
+}
+
+#[test]
+fn load_error_does_not_quote_the_file() {
+    let json_error = serde_json::from_str::<Config>(r#""12345678901234567890""#).unwrap_err();
+    assert!(
+        json_error.to_string().contains("12345678901234567890"),
+        "serde quotes the value: {json_error}"
+    );
+    let message = ConfigLoadError::DeserializeError(json_error).to_string();
+    assert!(!message.contains("12345678901234567890"), "{message}");
+}
+
+fn key(byte: u8) -> ConfigKey {
+    ConfigKey::new(&[byte; 32]).unwrap()
+}
+
+fn backups(dir: &Path) -> Vec<Vec<u8>> {
+    fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("config-backup-"))
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect()
+}
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    haystack.windows(needle.len()).any(|window| window == needle.as_bytes())
+}
+
+/// Ombra patch P13.
+#[test]
+fn an_encrypted_config_shows_no_values_and_loads_with_its_key() {
+    let config = random_config();
+    let marker = config.api_url.clone().unwrap();
+    let dir = tempdir().unwrap();
+
+    save_with_key(dir.as_ref(), &config, Some(&key(7))).unwrap();
+    assert!(!contains(&fs::read(dir.as_ref().join(CONFIG_FILE)).unwrap(), &marker));
+    assert_eq!(load_with_key(dir.as_ref(), &WgKeyStore::Plaintext, Some(&key(7))).unwrap(), config);
+}
+
+/// Ombra patch P13: the file of an older version is encrypted when it loads, and its plain text backups go.
+#[test]
+fn a_plain_text_config_is_encrypted_when_it_loads() {
+    let config = random_config();
+    let marker = config.api_url.clone().unwrap();
+    let dir = tempdir().unwrap();
+    let file = dir.as_ref().join(CONFIG_FILE);
+
+    save(dir.as_ref(), &config).unwrap();
+    fs::write(dir.as_ref().join("config-backup-2026-01-01T00-00-00.000.json"), &marker).unwrap();
+    assert!(contains(&fs::read(&file).unwrap(), &marker));
+    assert_eq!(load_with_key(dir.as_ref(), &WgKeyStore::Plaintext, Some(&key(7))).unwrap(), config);
+    assert!(!contains(&fs::read(&file).unwrap(), &marker));
+    assert_eq!(load_with_key(dir.as_ref(), &WgKeyStore::Plaintext, Some(&key(7))).unwrap(), config);
+    assert!(backups(dir.as_ref()).is_empty());
+}
+
+/// Ombra patch P22: a load deletes the temporary file of a save that a process kill stopped.
+#[test]
+fn a_load_deletes_the_temporary_file_of_an_interrupted_save() {
+    let config = random_config();
+    let dir = tempdir().unwrap();
+    save(dir.as_ref(), &config).unwrap();
+    let (_, leftover) = tempfile::NamedTempFile::new_in(dir.as_ref()).unwrap().keep().unwrap();
+    assert!(leftover.exists());
+
+    assert_eq!(load(dir.as_ref(), &WgKeyStore::Plaintext).unwrap(), config);
+    assert!(!leftover.exists());
+}
+
+/// Ombra patch P13: Java gives a new key only when the old one is gone, so the file can never open again. It resets
+/// like a file that does not parse, and its copy stays encrypted.
+#[test]
+fn an_encrypted_config_without_its_key_resets() {
+    let config = random_config();
+    for wrong_key in [Some(key(8)), None] {
+        let dir = tempdir().unwrap();
+        save_with_key(dir.as_ref(), &config, Some(&key(7))).unwrap();
+        let sealed = fs::read(dir.as_ref().join(CONFIG_FILE)).unwrap();
+
+        assert_eq!(
+            load_with_key(dir.as_ref(), &WgKeyStore::Plaintext, wrong_key.as_ref()).unwrap(),
+            Config::default()
+        );
+        assert_eq!(backups(dir.as_ref()), vec![sealed]);
+        assert_eq!(
+            load_with_key(dir.as_ref(), &WgKeyStore::Plaintext, wrong_key.as_ref()).unwrap(),
+            Config::default()
+        );
+    }
 }
 
 #[test]
@@ -178,6 +274,8 @@ fn test_ignore_invalid_fields() {
         feature_flags: Default::default(),
         force_tcp_tls_relay_transport: (),
         dns_content_block: Default::default(),
+        owned_udp_tunnel_ids: vec![Uuid::new_v4()],
+        wg_key_max_age_secs: Some(86_400),
     };
     let example_json = match serde_json::to_value(&example_config).unwrap() {
         serde_json::Value::Object(m) => m,
@@ -216,4 +314,69 @@ fn test_ignore_invalid_fields() {
         let reserialized = serde_json::to_string_pretty(&mutated).unwrap();
         let _ = serde_json::from_str::<Config>(&reserialized).unwrap();
     }
+}
+
+/// Ombra on Android uses `WgKeyStore::Keychain` backed by the Android Keystore: the secret key goes only to the
+/// store callback and never into config.json, and a restart with the stored secret gives back the same key pair.
+#[test]
+fn keychain_key_store_keeps_secret_out_of_config() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use std::sync::Mutex;
+
+    let stored: Arc<Mutex<Vec<[u8; 32]>>> = Default::default();
+    let key_store = |secret_key: Option<Vec<u8>>| {
+        let stored = stored.clone();
+        WgKeyStore::Keychain {
+            secret_key: secret_key.map(zeroize::Zeroizing::new),
+            set_secret_key: Box::new(move |secret_key: &[u8; 32]| {
+                stored.lock().unwrap().push(*secret_key);
+                true
+            }),
+        }
+    };
+    let dir = tempdir().unwrap();
+
+    // First start: no key anywhere, so the first use makes one and stores it.
+    let key_store_empty = key_store(None);
+    let mut config = load(dir.as_ref(), &key_store_empty).unwrap();
+    let (secret_key, public_key) = config.wireguard_key_cache.use_key_pair(&key_store_empty);
+    let secret_key = secret_key.to_bytes();
+    assert_eq!(*stored.lock().unwrap(), vec![secret_key]);
+    save(dir.as_ref(), &config).unwrap();
+    let json = fs::read_to_string(dir.as_ref().join(CONFIG_FILE)).unwrap();
+    assert!(json.contains(&public_key.to_string()));
+    assert!(!json.contains(&STANDARD.encode(secret_key)));
+
+    // Restart with the stored secret: same key pair, nothing stored again.
+    let key_store_restored = key_store(Some(secret_key.to_vec()));
+    let mut config = load(dir.as_ref(), &key_store_restored).unwrap();
+    let (restored_secret_key, restored_public_key) = config.wireguard_key_cache.use_key_pair(&key_store_restored);
+    assert_eq!(restored_secret_key.to_bytes(), secret_key);
+    assert_eq!(restored_public_key, public_key);
+    assert_eq!(stored.lock().unwrap().len(), 1);
+
+    // Restart without it (Keystore key lost): a new key pair is made and stored.
+    let key_store_lost = key_store(None);
+    let mut config = load(dir.as_ref(), &key_store_lost).unwrap();
+    let (new_secret_key, new_public_key) = config.wireguard_key_cache.use_key_pair(&key_store_lost);
+    assert_ne!(new_public_key, public_key);
+    assert_eq!(stored.lock().unwrap().last(), Some(&new_secret_key.to_bytes()));
+}
+
+/// Ombra patch P5: the ids of the Speed mode tunnels survive a restart, so that their tunnels are deleted then. Config
+/// files of older versions have none. (`test_ignore_invalid_fields` covers broken values.)
+#[test]
+fn owned_udp_tunnel_ids_survive_a_restart() {
+    let dir = tempdir().unwrap();
+    let ids = vec![Uuid::new_v4(), Uuid::new_v4()];
+    let config = Config { owned_udp_tunnel_ids: ids.clone(), ..random_config() };
+    save(dir.as_ref(), &config).unwrap();
+    assert_eq!(load(dir.as_ref(), &WgKeyStore::Plaintext).unwrap().owned_udp_tunnel_ids, ids);
+
+    let mut json = serde_json::to_value(&config).unwrap();
+    json.as_object_mut().unwrap().remove("owned_udp_tunnel_ids");
+    fs::write(dir.as_ref().join(CONFIG_FILE), json.to_string()).unwrap();
+    let loaded = load(dir.as_ref(), &WgKeyStore::Plaintext).unwrap();
+    assert!(loaded.owned_udp_tunnel_ids.is_empty());
+    assert_eq!(loaded.account_id, config.account_id);
 }

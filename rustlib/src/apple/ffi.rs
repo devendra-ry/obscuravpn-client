@@ -28,6 +28,7 @@ pub extern "C" fn initialize_apple_system_logging(log_dir: FfiStr) -> *mut LogPe
         log_persistence = crate::logging::init(
             tracing_oslog::OsLogger::new("net.obscura.rust-apple", "default"),
             cfg!(target_os = "ios").then(|| log_dir.as_str().as_ref()),
+            false,
         )
     });
     log_persistence.map(Box::new).map(Box::into_raw).unwrap_or(std::ptr::null_mut())
@@ -80,7 +81,7 @@ pub unsafe extern "C" fn initialize(
         let config_dir = config_dir.to_string().into();
         let user_agent = user_agent.to_string();
         let wg_key_store = WgKeyStore::Keychain {
-            secret_key: Some(keychain_wg_secret_key.to_vec()).filter(|v| !v.is_empty()),
+            secret_key: Some(zeroize::Zeroizing::new(keychain_wg_secret_key.to_vec())).filter(|v| !v.is_empty()),
             set_secret_key: Box::new(move |sk: &[u8; 32]| keychain_set_wg_secret_key(sk.ffi())),
         };
         let log_persistence = std::ptr::NonNull::new(log_persistence).map(|log_persistence|
@@ -93,6 +94,7 @@ pub unsafe extern "C" fn initialize(
         match Manager::new(
             config_dir,
             wg_key_store,
+            None,
             user_agent,
             os_impl.clone(),
             os_impl.network_interface(),
@@ -166,7 +168,7 @@ pub unsafe extern "C" fn set_network_interface(global: *const Global, index: u32
             .map_err(|_| tracing::error!(message_id = "Y8aRUbjp", index, "network interface index out of range"))
             .ok(),
     }
-    .map(|index| NetworkInterface { index, name: name.as_str().to_string() });
+    .map(|index| NetworkInterface { index, name: name.as_str().to_string(), network_handle: 0, mtu_hint: None });
     global.os_impl.set_network_interface(network_interface);
 }
 

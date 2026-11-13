@@ -78,5 +78,8 @@ contract test is dropped because its fixture lives in the Ombra app.
 - `cargo build --release --bin obscura` (Windows x64): builds.
 - `obscura-ui`: `tsc --noEmit` passes. `vite build` with `OBS_WEB_PLATFORM=windows` builds (with a placeholder
   licenses file).
-- Not verified: the C# WinUI client and the MSI (this machine has no .NET 10 SDK or WinUI workload), a real
-  connection in any mode, the macOS, iOS and Linux builds, and how the new Settings card looks.
+- C# WinUI client: `dotnet build -c Debug -p:Platform=x64` with the .NET 10 SDK builds with 0 errors. Its warnings are
+  pre-existing (debug signing certificate, an unused field in `MainWindow`). The licenses pre-build step (`just
+  gen-license`) was skipped for that build. The repo has no C# test project.
+- Not verified: the Release build and the MSI, a real connection in any mode, the macOS, iOS and Linux builds, and
+  how the new Settings card looks.

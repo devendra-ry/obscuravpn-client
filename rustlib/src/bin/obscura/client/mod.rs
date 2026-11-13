@@ -6,7 +6,7 @@ use obscuravpn_client::exit_selection::ExitSelector;
 use obscuravpn_client::linux::debug_bundle::create_combined_debug_bundle;
 use obscuravpn_client::linux::ipc::{LinuxIpcError, run_command};
 use obscuravpn_client::linux::ui_log_dir;
-use obscuravpn_client::manager::{Status, TunnelArgs, VpnStatus};
+use obscuravpn_client::manager::{Status, TunnelArgs, TunnelArgsUpdate, VpnStatus};
 use obscuravpn_client::manager_cmd::{ManagerCmd, ManagerCmdErrorCode};
 
 #[derive(thiserror::Error, Debug)]
@@ -131,7 +131,9 @@ async fn login(args: ClientLoginArgs) -> Result<(), ClientError> {
 }
 
 async fn go_to_target_state(target_state: Option<TunnelArgs>) -> Result<(), ClientError> {
-    run_command::<()>(ManagerCmd::SetTunnelArgs { args: target_state.clone(), active: Some(target_state.is_some()) }).await??;
+    // The CLI chooses only the exit; the stored protocol and entry relay stay.
+    let update = target_state.as_ref().map(|args| TunnelArgsUpdate::exit_only(args.exit.clone()));
+    run_command::<()>(ManagerCmd::SetTunnelArgs { args: update, active: Some(target_state.is_some()) }).await??;
     eprintln!("updated target state");
     let mut known_version = None;
     loop {

@@ -35,6 +35,7 @@ Nothing here was tested against the live relays or with a real connection on Win
 | Encrypted `config.json` | P13 | Ported, inactive on Windows | The service passes no key, so the file stays plain text, as upstream. See (c). |
 | Referral command `apiUseReferralCode` | P16 | In the core, not in any UI | The core sends no referral on its own. |
 | `Status.tunnelArgs`, `Status.wgKeyMaxAgeSecs` | new | Added on this branch | These let the UI, the tray and auto-connect keep the protocol, entry relay and MTU. |
+| `setTunnelArgs` keeps the stored protocol, entry relay and MTU when a client sends only `exit` | new | Added on this branch | Before, a location switch from the official tray or an older UI reset the protocol to Stealth and the entry relay to Fastest. `TunnelArgsUpdate` in `manager.rs`. |
 | Crate security updates (`rustls`, `webpki-roots`, `tokio` and others) | Cargo.lock | Ported | `obscuravpn-api` stays at v1.186's `f7578b5`. `deny.toml` lists the ignored advisories with reasons. |
 
 Android-only core patches are not ported. `src/android` is kept as upstream so that the official Android app still
@@ -72,7 +73,7 @@ contract test is dropped because its fixture lives in the Ombra app.
 
 ## Verification on this branch
 
-- `cargo test --target x86_64-pc-windows-msvc`: all tests pass (131 lib, 5 bin).
+- `cargo test --target x86_64-pc-windows-msvc`: all tests pass (132 lib, 5 bin).
 - `cargo clippy --all-targets` (Windows): no warnings. `cargo ndk -t arm64-v8a check --lib`: builds. One deprecation
   warning (`AsyncFd::new`) comes from the `tokio` security update in upstream Android code.
 - `cargo build --release --bin obscura` (Windows x64): builds.

@@ -22,7 +22,7 @@ use super::ipc::run_command;
 use super::status::{LinuxServiceDegradation, NEVPNStatus, OsStatus, ServiceStatus};
 use super::status_watch::GuiStatusWatch;
 use crate::exit_selection::ExitSelector;
-use crate::manager::{TunnelArgs, VpnStatus};
+use crate::manager::{TunnelArgsUpdate, VpnStatus};
 use crate::manager_cmd::ManagerCmd;
 
 pub enum ShowTarget {
@@ -180,7 +180,7 @@ impl TrayState {
                 checked: quick_connect_checked,
                 activate: Box::new(|this: &mut Self| {
                     this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs {
-                        args: Some(TunnelArgs { exit: ExitSelector::Any {}, ..Default::default() }),
+                        args: Some(TunnelArgsUpdate::exit_only(ExitSelector::Any {})),
                         active: Some(true),
                     })
                 }),
@@ -212,7 +212,7 @@ impl TrayState {
                     checked,
                     activate: Box::new(move |this: &mut Self| {
                         this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs {
-                            args: Some(TunnelArgs { exit: selector.clone(), ..Default::default() }),
+                            args: Some(TunnelArgsUpdate::exit_only(selector.clone())),
                             active: Some(true),
                         })
                     }),
@@ -245,7 +245,7 @@ impl TrayState {
                     checked: true,
                     activate: Box::new(move |this: &mut Self| {
                         this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs {
-                            args: Some(TunnelArgs { exit: selector.clone(), ..Default::default() }),
+                            args: Some(TunnelArgsUpdate::exit_only(selector.clone())),
                             active: Some(true),
                         })
                     }),

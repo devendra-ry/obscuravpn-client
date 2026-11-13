@@ -159,6 +159,37 @@ pub struct TunnelArgs {
     pub udp_mtu: Option<u16>,
 }
 
+/// Tunnel args as a client sends them in `setTunnelArgs`. A field that is missing (or `udpMtu: null`) keeps the stored
+/// value. Clients that know only `exit`, like the official tray, auto-connect and older UIs, then switch the location
+/// without resetting the protocol, entry relay and Speed mode MTU that the user chose.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TunnelArgsUpdate {
+    pub exit: ExitSelector,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<RelaySelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<TunnelMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub udp_mtu: Option<u16>,
+}
+
+impl TunnelArgsUpdate {
+    /// Another exit; everything else stays as stored.
+    pub fn exit_only(exit: ExitSelector) -> Self {
+        Self { exit, relay: None, mode: None, udp_mtu: None }
+    }
+
+    pub fn apply_to(self, stored: &TunnelArgs) -> TunnelArgs {
+        TunnelArgs {
+            exit: self.exit,
+            relay: self.relay.unwrap_or_else(|| stored.relay.clone()),
+            mode: self.mode.unwrap_or(stored.mode),
+            udp_mtu: self.udp_mtu.or(stored.udp_mtu),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum TunnelMode {
@@ -649,12 +680,43 @@ mod tests {
         };
         let fra = CityCode { country_code: CountryCode("de".into()), city_code: "fra".into() };
         assert_eq!(
-            args,
+            args.apply_to(&TunnelArgs::default()),
             TunnelArgs { relay: RelaySelector::City { city_code: fra }, mode: TunnelMode::TcpTls, ..Default::default() }
         );
 
         let cmd: ManagerCmd = serde_json::from_value(json!({"setTunnelArgs": {"args": {"exit": {"any": {}}}, "active": true}})).unwrap();
-        assert!(matches!(cmd, ManagerCmd::SetTunnelArgs { args: Some(args), active: Some(true) } if args == TunnelArgs::default()));
+        assert!(
+            matches!(cmd, ManagerCmd::SetTunnelArgs { args: Some(args), active: Some(true) } if args == TunnelArgsUpdate::exit_only(ExitSelector::Any {}))
+        );
+    }
+
+    #[test]
+    fn exit_only_args_keep_the_stored_protocol_relay_and_mtu() {
+        // The official tray and UI send only `exit` when they switch the location.
+        let stored = TunnelArgs {
+            exit: ExitSelector::Any {},
+            relay: RelaySelector::Country { country_code: CountryCode("de".into()) },
+            mode: TunnelMode::WireguardUdp,
+            udp_mtu: Some(1400),
+        };
+        let zurich = ExitSelector::City { city_code: CityCode { country_code: CountryCode("ch".into()), city_code: "zrh".into() } };
+        let cmd: ManagerCmd = serde_json::from_value(json!({"setTunnelArgs": {
+            "args": {"exit": {"city": {"country_code": "ch", "city_code": "zrh"}}},
+            "active": true,
+        }}))
+        .unwrap();
+        let ManagerCmd::SetTunnelArgs { args: Some(update), .. } = cmd else {
+            panic!("unexpected command {cmd:?}");
+        };
+        assert_eq!(update.apply_to(&stored), TunnelArgs { exit: zurich.clone(), ..stored.clone() });
+
+        // `udpMtu: null` (an unset field of a UI) keeps the stored MTU too; a given field replaces the stored one.
+        let update: TunnelArgsUpdate = serde_json::from_value(json!({"exit": {"any": {}}, "mode": "quic", "udpMtu": null})).unwrap();
+        let args = update.apply_to(&stored);
+        assert_eq!(
+            (args.mode, args.udp_mtu, args.relay),
+            (TunnelMode::Quic, Some(1400), stored.relay.clone())
+        );
     }
 
     #[test]

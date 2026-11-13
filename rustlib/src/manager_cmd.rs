@@ -24,7 +24,7 @@ use crate::{
         service::{ServiceDebugBundleHandle, ServiceDebugBundleToken},
     },
     errors::{ApiError, ConfigDirty, ConfigDirtyOrApiError},
-    manager::{Manager, ManagerTrafficStats, Status, TunnelArgs},
+    manager::{Manager, ManagerTrafficStats, Status, TunnelArgsUpdate},
     network_config::DnsContentBlock,
 };
 
@@ -223,7 +223,8 @@ pub enum ManagerCmd {
         host: Option<String>,
     },
     SetTunnelArgs {
-        args: Option<TunnelArgs>,
+        /// Fields that are missing keep the stored value (`TunnelArgsUpdate`).
+        args: Option<TunnelArgsUpdate>,
         active: Option<bool>,
     },
     SetUseSystemDns {
@@ -379,7 +380,10 @@ impl ManagerCmd {
             Self::SetPinnedExits { exits } => manager.run_on_client_state(|c| c.set_pinned_exits(exits)),
             Self::SetSniRelay { host } => manager.run_on_client_state(|c| c.set_sni_relay(host)),
             Self::SetWgKeyMaxAge { secs } => manager.run_on_client_state(|c| c.set_wg_key_max_age(secs)),
-            Self::SetTunnelArgs { args, active } => manager.run_on_client_state(|c| c.set_tunnel_target_state(args, active)),
+            Self::SetTunnelArgs { args, active } => manager.run_on_client_state(|c| {
+                let args = args.map(|update| update.apply_to(&c.borrow().config().tunnel_args));
+                c.set_tunnel_target_state(args, active)
+            }),
             Self::SetUseSystemDns { enable } => manager.run_on_client_state(|c| c.set_use_system_dns(enable)),
             Self::SetLocalNetworkAccess { enable } => manager.run_on_client_state(|c| c.set_local_network_access(enable)),
             Self::SetTailscaleBypass { enable } => manager.run_on_client_state(|c| c.set_tailscale_bypass(enable)),

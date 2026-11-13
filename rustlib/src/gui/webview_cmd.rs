@@ -6,7 +6,7 @@ use obscuravpn_client::linux::file_manager::reveal_item_in_dir;
 use obscuravpn_client::linux::ipc::run_command;
 use obscuravpn_client::linux::status::NavigationView;
 use obscuravpn_client::linux::status_watch::GuiStatusWatch;
-use obscuravpn_client::manager::TunnelArgs;
+use obscuravpn_client::manager::TunnelArgsUpdate;
 use obscuravpn_client::manager_cmd::{ManagerCmd, redacted_json_error};
 use obscuravpn_client::ui_config::{ColorScheme, UiConfigHandle};
 use serde::{Deserialize, Serialize};
@@ -175,7 +175,7 @@ impl WebviewCmd {
                 }
             }
             WebviewCmd::StartTunnel { tunnel_args } => {
-                let args: TunnelArgs = serde_json::from_str(&tunnel_args).map_err(|error| {
+                let args: TunnelArgsUpdate = serde_json::from_str(&tunnel_args).map_err(|error| {
                     tracing::error!(message_id = "Nc8dVt2Q", %error, "failed to parse tunnel args");
                     LinuxErrorCode::Other
                 })?;

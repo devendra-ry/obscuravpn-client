@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import { ExitSelector, ExitSelectorCity, TunnelArgs } from '../bridge/commands';
+import { ExitSelector, ExitSelectorCity, Relay, TunnelArgs } from '../bridge/commands';
 import { HAS_NE_VPN_STATUS } from '../bridge/SystemProvider';
 import { AccountId } from './accountUtils';
 import { AccountInfo, Exit, ServiceStatusOutput } from './api';
@@ -123,11 +123,14 @@ export interface SubscriptionProductModel {
 export enum TransportKind {
     Quic = 'quic',
     TcpTls = 'tcpTls',
+    WireguardUdp = 'wireguardUdp',
 }
 
 export interface VpnStatus {
     connected?: {
       exit: Exit,
+      /** The entry relay in use. */
+      relay?: Relay,
       clientPublicKey: string,
       exitPublicKey: string,
       transport: TransportKind,

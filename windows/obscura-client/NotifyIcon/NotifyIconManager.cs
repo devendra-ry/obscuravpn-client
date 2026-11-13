@@ -334,7 +334,8 @@ public sealed partial class NotifyIconManager
 
     static async void StartTunnel(ExitSelector exit)
     {
-        var args = new SetTunnelArgs { Args = new TunnelArgs { Exit = exit }, Active = true };
+        var stored = StatusSubscriber.Instance.Current?.TunnelArgs;
+        var args = new SetTunnelArgs { Args = TunnelArgs.WithExit(exit, stored), Active = true };
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         try { await IPCCommand.RunWithArgAsync(args, cts.Token); }
         catch (Exception ex) { Log.Error($"StartTunnel failed: {ex}"); }

@@ -89,7 +89,7 @@ public sealed partial class StatusSubscriber
             return;
         }
         Log.Info($"auto-connecting to {status.LastExit}");
-        var args = new SetTunnelArgs { Args = new TunnelArgs { Exit = status.LastExit }, Active = true };
+        var args = new SetTunnelArgs { Args = TunnelArgs.WithExit(status.LastExit, status.TunnelArgs), Active = true };
         try { await IPCCommand.RunWithArgAsync(args); }
         catch (Exception ex) { Log.Error($"auto-connect failed: {ex}"); }
     }

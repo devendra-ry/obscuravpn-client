@@ -1,4 +1,4 @@
-import { Accordion, ActionIcon, Alert, Button, Card, Checkbox, Divider, Group, Radio, Stack, Switch, Text, Title } from '@mantine/core';
+import { Accordion, ActionIcon, Alert, Button, Card, Checkbox, Divider, Group, NumberInput, Radio, Select, Stack, Switch, Text, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import React, { ReactNode, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -8,10 +8,12 @@ import { MdBlock, MdWarning } from 'react-icons/md';
 import * as commands from '../bridge/commands';
 import { PLATFORM, Platform } from '../bridge/SystemProvider';
 import { DNS_OPTIONS_WEBPAGE } from '../common/accountUtils';
+import { getCountry } from '../common/api';
 import { AppContext, DNSContentBlock, featureFlagEnabled, FeatureFlagKey, KnownFeatureFlagKey } from '../common/appContext';
 import commonClasses from '../common/common.module.css';
 import { NotificationId } from '../common/notifIds';
 import { useAsync } from '../common/useAsync';
+import { useRelayList } from '../common/useRelayList';
 import { useSetAppearance } from '../common/useSetAppearance';
 import { normalizeError } from '../common/utils';
 import { fmtErrorI18n, TranslationKey } from '../translations/i18n';
@@ -22,16 +24,147 @@ const IS_APPLE = APPLE_PLATFORMS.has(PLATFORM);
 const IS_ANDROID = PLATFORM === Platform.Android;
 const IS_LINUX = PLATFORM === Platform.Linux;
 const IS_WINDOWS = PLATFORM === Platform.Windows;
+/** Protocol, entry relay and key rotation (ported from Ombra). Only verified on Windows so far. */
+const HAS_TUNNEL_OPTIONS = IS_WINDOWS;
 
 export default function Settings() {
   return (
     <Stack mb='xl' gap='lg' align='flex-start' className={classes.container}>
       <GeneralSettings />
+      {HAS_TUNNEL_OPTIONS && <ConnectionSettings />}
       <DnsSettings />
       <ExperimentalSettings />
       <NetworkSettings />
       <AppearanceSettings />
     </Stack>
+  );
+}
+
+const DAY_S = 24 * 60 * 60;
+const KEY_MAX_AGE_OPTIONS: { secs: number, label: TranslationKey }[] = [
+  { secs: 30 * DAY_S, label: 'wgKeyMaxAge30Days' },
+  { secs: DAY_S, label: 'wgKeyMaxAgeDaily' },
+  { secs: 0, label: 'wgKeyMaxAgeEachConnect' },
+];
+
+function relaySelectorValue(relay: commands.RelaySelector | undefined): string {
+  if (relay === undefined || 'any' in relay) return 'any';
+  if ('relay' in relay) return `relay:${relay.relay.id}`;
+  if ('city' in relay) return `city:${relay.city.country_code}:${relay.city.city_code}`;
+  return `country:${relay.country.country_code}`;
+}
+
+function relaySelectorFromValue(value: string): commands.RelaySelector {
+  const [kind, a, b] = value.split(':');
+  switch (kind) {
+    case 'relay': return { relay: { id: value.slice('relay:'.length) } };
+    case 'city': return { city: { country_code: a!, city_code: b! } };
+    case 'country': return { country: { country_code: a! } };
+    default: return { any: {} };
+  }
+}
+
+function ConnectionSettings() {
+  const { t } = useTranslation();
+  const { appStatus } = useContext(AppContext);
+  const { relayList } = useRelayList({ periodS: 60 * 60 });
+  const { showLoadingUI, error, execute: setTunnelArgs } = commands.useCommand({ command: commands.setTunnelArgs });
+  const { error: keyAgeError, execute: setWgKeyMaxAge } = commands.useCommand({ command: commands.setWgKeyMaxAge });
+  const [udpMtuDraft, setUdpMtuDraft] = useState<number | string | undefined>(undefined);
+  const stored = appStatus.tunnelArgs;
+  // A service without these fields in its status does not have the options either.
+  if (stored === undefined) return null;
+  const mode = stored.mode ?? 'quic';
+  const update = (change: Partial<commands.TunnelArgs>) => setTunnelArgs({ ...stored, ...change });
+
+  const relayValue = relaySelectorValue(stored.relay);
+  const countries = new Map<string, commands.Relay[]>();
+  for (const relay of relayList ?? []) {
+    countries.set(relay.country_code, [...(countries.get(relay.country_code) ?? []), relay]);
+  }
+  const countryName = (code: string) => getCountry(code)?.name ?? code.toUpperCase();
+  const relayGroups = [...countries.entries()]
+    .sort(([left], [right]) => countryName(left).localeCompare(countryName(right)))
+    .map(([countryCode, relays]) => {
+      const cities = new Map(relays.map(relay => [relay.city_code, relay.city_name]));
+      return {
+        group: countryName(countryCode),
+        items: [
+          { value: `country:${countryCode}`, label: t('relayAnyIn', { location: countryName(countryCode) }) },
+          ...(cities.size > 1
+            ? [...cities].map(([cityCode, cityName]) => ({ value: `city:${countryCode}:${cityCode}`, label: t('relayAnyIn', { location: cityName }) }))
+            : []),
+          ...relays.map(relay => ({ value: `relay:${relay.id}`, label: `${relay.city_name} (${relay.id})` })),
+        ],
+      };
+    });
+  const relayData = [{ group: t('relayAutomatic'), items: [{ value: 'any', label: t('relayFastest') }] }, ...relayGroups];
+  if (!relayData.some(group => group.items.some(item => item.value === relayValue))) {
+    // The stored relay is not in the list (yet): keep it selectable.
+    relayData.push({ group: t('relayStored'), items: [{ value: relayValue, label: relayValue }] });
+  }
+
+  const keyMaxAge = appStatus.wgKeyMaxAgeSecs ?? 30 * DAY_S;
+  const commitUdpMtu = () => {
+    if (typeof udpMtuDraft !== 'number') return;
+    const udpMtu = Math.min(commands.UDP_MTU_MAX, Math.max(commands.UDP_MTU_MIN, Math.round(udpMtuDraft)));
+    setUdpMtuDraft(undefined);
+    if (udpMtu !== stored.udpMtu) void update({ udpMtu });
+  };
+
+  return (
+    <Card padding='md' radius='md' w='100%' shadow='xs'>
+      <Stack gap='sm' align='flex-start'>
+        <Title order={4}>{t('Connection')}</Title>
+        <Radio.Group w='100%' value={mode} onChange={value => update({ mode: value as commands.TunnelMode })} label={t('tunnelModeLabel')} error={error}>
+          <Stack gap='xs' mt='xs'>
+            <Radio disabled={showLoadingUI} value='quic' label={t('tunnelModeStealth')} description={t('tunnelModeStealthDescription')} />
+            <Radio disabled={showLoadingUI} value='wireguardUdp' label={t('tunnelModeSpeed')} description={t('tunnelModeSpeedDescription')} />
+            <Radio disabled={showLoadingUI} value='tcpTls' label={t('tunnelModeTcpTls')} description={t('tunnelModeTcpTlsDescription')} />
+          </Stack>
+        </Radio.Group>
+        {mode === 'wireguardUdp' && (
+          <NumberInput
+            label={t('udpMtuLabel')}
+            description={t('udpMtuDescription', { min: commands.UDP_MTU_MIN, max: commands.UDP_MTU_MAX })}
+            min={commands.UDP_MTU_MIN}
+            max={commands.UDP_MTU_MAX}
+            allowDecimal={false}
+            clampBehavior='blur'
+            value={udpMtuDraft ?? stored.udpMtu ?? commands.UDP_MTU_MIN}
+            onChange={setUdpMtuDraft}
+            onBlur={commitUdpMtu}
+            onKeyDown={event => event.key === 'Enter' && commitUdpMtu()}
+            disabled={showLoadingUI}
+          />
+        )}
+        <Divider w='100%' />
+        <Select
+          w='100%'
+          label={t('entryRelayLabel')}
+          description={t('entryRelayDescription')}
+          data={relayData}
+          value={relayValue}
+          onChange={value => value !== null && update({ relay: relaySelectorFromValue(value) })}
+          allowDeselect={false}
+          searchable
+          disabled={showLoadingUI}
+        />
+        <Divider w='100%' />
+        <Radio.Group
+          w='100%'
+          value={String(keyMaxAge)}
+          onChange={value => setWgKeyMaxAge(Number(value))}
+          label={t('wgKeyMaxAgeLabel')}
+          description={t('wgKeyMaxAgeDescription')}
+          error={keyAgeError}
+        >
+          <Group gap='md' mt='xs'>
+            {KEY_MAX_AGE_OPTIONS.map(option => <Radio key={option.secs} value={String(option.secs)} label={t(option.label)} />)}
+          </Group>
+        </Radio.Group>
+      </Stack>
+    </Card>
   );
 }
 

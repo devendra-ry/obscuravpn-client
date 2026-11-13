@@ -225,9 +225,22 @@ public class IPCResponse
     public JsonElement Err { get; set; }
 }
 
-class TunnelArgs
+// See ../../rustlib/src/manager.rs. Relay, Mode and UdpMtu are optional there (serde defaults), so they are left out
+// when null, and kept as they come from the UI or the stored args.
+public class TunnelArgs
 {
     public required ExitSelector Exit { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonElement? Relay { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Mode { get; set; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ushort? UdpMtu { get; set; }
+
+    /// The stored args with another exit: a tunnel started from the tray or by auto-connect keeps the entry relay,
+    /// protocol and Speed mode MTU that the user chose in the UI.
+    public static TunnelArgs WithExit(ExitSelector exit, TunnelArgs? stored) =>
+        new() { Exit = exit, Relay = stored?.Relay, Mode = stored?.Mode, UdpMtu = stored?.UdpMtu };
 }
 
 class SetTunnelArgs : IIPCCommandArg

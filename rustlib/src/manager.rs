@@ -72,6 +72,11 @@ pub struct Status {
     pub tailscale_bypass: bool,
     pub wireguard_bypass: bool,
     pub dns_content_block: DnsContentBlock,
+    /// The stored tunnel args (also while disconnected), so a client that starts the tunnel with a new exit keeps the
+    /// relay selector, mode and Speed mode MTU of the last ones (Ombra patch P1).
+    pub tunnel_args: TunnelArgs,
+    /// The WireGuard key max age in seconds (Ombra patch P14). 0: a new key at each connect.
+    pub wg_key_max_age_secs: u64,
 }
 
 impl Status {
@@ -90,8 +95,10 @@ impl Status {
             local_network_access,
             tailscale_bypass,
             wireguard_bypass,
+            tunnel_args,
             ..
         } = client_state.config();
+        let wg_key_max_age_secs = client_state.config().wg_key_max_age().as_secs();
         let api_url = client_state.base_url();
         Self {
             version,
@@ -111,6 +118,8 @@ impl Status {
             tailscale_bypass: tailscale_bypass.is_enabled(),
             wireguard_bypass: wireguard_bypass.is_enabled(),
             dns_content_block: *dns_content_block,
+            tunnel_args: tunnel_args.clone(),
+            wg_key_max_age_secs,
         }
     }
 }
@@ -575,6 +584,21 @@ mod tests {
             TunnelArgs { exit: ExitSelector::Country { country_code: CountryCode("US".into()) }, ..Default::default() }
         );
         assert!(config.tunnel_active);
+    }
+
+    #[test]
+    fn status_shows_the_stored_tunnel_args_and_the_key_max_age() {
+        // The Windows UI, tray and auto-connect start the tunnel with these args and only another exit.
+        let dir = tempdir().unwrap();
+        let client_state = ClientState::new(dir.path().into(), WgKeyStore::None, None, "test".into(), false).unwrap();
+        let speed = TunnelArgs { mode: TunnelMode::WireguardUdp, udp_mtu: Some(1400), ..Default::default() };
+        client_state.set_tunnel_target_state(Some(speed), Some(false));
+        client_state.set_wg_key_max_age(0);
+        let status = serde_json::to_value(Status::new(Uuid::new_v4(), VpnStatus::Disconnected {}, &client_state.borrow())).unwrap();
+        assert_eq!(status["tunnelArgs"]["mode"], "wireguardUdp");
+        assert_eq!(status["tunnelArgs"]["udpMtu"], 1400);
+        assert_eq!(status["tunnelArgs"]["relay"], json!({"any": {}}));
+        assert_eq!(status["wgKeyMaxAgeSecs"], 0);
     }
 
     #[test]

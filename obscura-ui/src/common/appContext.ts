@@ -209,6 +209,9 @@ export interface AppStatus {
     localNetworkAccess: boolean,
     tailscaleBypass: boolean,
     wireguardBypass: boolean,
+    // Absent in the status of an older service.
+    tunnelArgs?: TunnelArgs,
+    wgKeyMaxAgeSecs?: number,
 }
 
 interface IAppContext {

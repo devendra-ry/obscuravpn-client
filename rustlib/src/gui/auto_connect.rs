@@ -29,7 +29,8 @@ pub async fn auto_connect_if_enabled(gui_status: Arc<GuiStatusWatch>) {
     }
     let exit = status.last_exit;
     tracing::info!(message_id = "Jc8vLp4W", ?exit, "auto-connecting");
-    let cmd = ManagerCmd::SetTunnelArgs { args: Some(TunnelArgs { exit }), active: Some(true) };
+    // Keeps the stored relay selector, mode and Speed mode MTU.
+    let cmd = ManagerCmd::SetTunnelArgs { args: Some(TunnelArgs { exit, ..status.tunnel_args }), active: Some(true) };
     match run_command::<serde_json::Value>(cmd).await {
         Ok(Ok(_)) => {}
         Ok(Err(error)) => tracing::error!(message_id = "Nz5kTq9X", ?error, "auto-connect failed"),

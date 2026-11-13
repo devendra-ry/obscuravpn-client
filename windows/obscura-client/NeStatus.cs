@@ -14,6 +14,8 @@ public sealed class NeStatus
     public required ExitSelector LastExit { get; set; }
     public required AccountStatus? Account { get; set; }
     public required bool AutoConnect { get; set; }
+    // Absent in the status of an older service.
+    public TunnelArgs? TunnelArgs { get; set; }
 }
 
 public sealed class VpnStatusEnvelope

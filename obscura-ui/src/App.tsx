@@ -82,7 +82,7 @@ export default function () {
     }
     ignoreConnectingErrors.current = false;
     try {
-      await commands.connect(exit);
+      await commands.connect(exit, appStatus?.tunnelArgs);
     } catch (e) {
       const error = normalizeError(e);
       if (error.message === 'accountExpired') {

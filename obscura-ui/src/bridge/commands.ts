@@ -121,10 +121,28 @@ export async function setColorScheme(value: 'dark' | 'light' | 'auto'): Promise<
     await invoke('setColorScheme', { value });
 }
 
-// See ../../../rustlib/src/manager.rs
+// See ../../../rustlib/src/manager.rs. `relay`, `mode` and `udpMtu` have serde defaults there.
 export interface TunnelArgs {
     exit: ExitSelector,
+    relay?: RelaySelector,
+    mode?: TunnelMode,
+    udpMtu?: number | null,
 }
+
+/** quic: Stealth (WireGuard in QUIC). wireguardUdp: Speed (plain WireGuard over UDP via the relay). tcpTls: WireGuard over TLS. */
+export type TunnelMode = 'quic' | 'wireguardUdp' | 'tcpTls';
+
+// See ../../../rustlib/src/relay_selection.rs. The entry relays that take part in the relay race.
+export type RelaySelector =
+  | { any: {} }
+  | { relay: { id: string } }
+  | { city: ExitSelectorCity }
+  | { country: ExitSelectorCountry }
+;
+
+/** Speed mode tunnel MTU range of the Rust core (`udp_mtu` is clamped to it). */
+export const UDP_MTU_MIN = 1280;
+export const UDP_MTU_MAX = 1420;
 
 export interface ExitSelectorId {
   id: string;
@@ -147,8 +165,10 @@ export type ExitSelector =
   | { country: ExitSelectorCountry }
 ;
 
-export async function connect(exit: ExitSelector): Promise<void> {
+/** `stored`: the tunnel args in the status; their relay, mode and MTU stay. */
+export async function connect(exit: ExitSelector, stored?: TunnelArgs): Promise<void> {
     let args: TunnelArgs = {
+      ...stored,
       exit,
     };
     await invoke('startTunnel', {
@@ -247,6 +267,32 @@ export async function refreshExitList(freshnessS: number): Promise<void> {
   await jsonFfiCmd('refreshExitList', {
     freshness: freshnessS * 1000,
   });
+}
+
+// See ../../../rustlib/ (obscuravpn-api `OneRelay`).
+export interface Relay {
+  id: string,
+  country_code: string,
+  city_code: string,
+  city_name: string,
+}
+
+export async function getRelayList(version?: string): Promise<CachedValue<Relay[]>> {
+  return await jsonFfiCmd('getRelayList', { knownVersion: version }, null) as CachedValue<Relay[]>;
+}
+
+export async function refreshRelayList(freshnessS: number): Promise<void> {
+  await jsonFfiCmd('refreshRelayList', { freshness: freshnessS * 1000 });
+}
+
+/** Changes the stored tunnel args without starting or stopping the tunnel. A live tunnel reconnects when it must. */
+export async function setTunnelArgs(args: TunnelArgs): Promise<void> {
+  await jsonFfiCmd('setTunnelArgs', { args, active: null });
+}
+
+/** 0: a new WireGuard key at each connect. */
+export async function setWgKeyMaxAge(secs: number): Promise<void> {
+  await jsonFfiCmd('setWgKeyMaxAge', { secs });
 }
 
 export async function deleteAccount(): Promise<void> {

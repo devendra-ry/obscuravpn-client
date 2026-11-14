@@ -199,6 +199,8 @@ impl Tun {
         let mut result = Ok(());
         let addresses = (mtu, ipv4, ipv6);
         if *self.applied_addresses.lock().unwrap() != Some(addresses) {
+            // Before the addresses, so that they are usable at once. A failure only delays them.
+            let _ = iphelper::disable_duplicate_address_detection(&self.adapter, ipv6.is_some());
             let mut applied = iphelper::set_mtu(&self.adapter, mtu, ipv6.is_some())
                 .await
                 .and(iphelper::set_ipv4_address(&self.adapter, ipv4).await);

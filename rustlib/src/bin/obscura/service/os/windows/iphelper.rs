@@ -239,6 +239,49 @@ fn set_metric(adapter: &wintun::Adapter, automatic: bool, metric: u32, ipv6: boo
     success
 }
 
+/// Turns off duplicate address detection on the tunnel interface, as WireGuard for Windows does. With it, every new
+/// tunnel address stays "tentative" for about 3 s, and no socket can use it as a source: DNS and all other traffic
+/// fail although the tunnel is up. Nothing else can hold an address on a point-to-point tunnel.
+pub fn disable_duplicate_address_detection(adapter: &wintun::Adapter, ipv6: bool) -> Result<(), ()> {
+    let families: &[ADDRESS_FAMILY] = if ipv6 { &[AF_INET, AF_INET6] } else { &[AF_INET] };
+    let mut success = Ok(());
+    for &family in families {
+        let mut row = match get_ip_interface_entry(adapter, family) {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::error!(
+                    message_id = "Tf6qWc2N",
+                    error_code = error.0,
+                    family = family_name(family),
+                    "GetIpInterfaceEntry failed"
+                );
+                success = Err(());
+                continue;
+            }
+        };
+        if row.DadTransmits == 0 {
+            continue;
+        }
+        // See `set_metric`.
+        row.SitePrefixLength = if family == AF_INET { 0 } else { 128 };
+        row.DadTransmits = 0;
+        // SAFETY: as in `set_metric`.
+        let result = unsafe { SetIpInterfaceEntry(&mut row) };
+        if result == NO_ERROR {
+            tracing::info!(message_id = "Gm8vRx3K", family = family_name(family), "turned off duplicate address detection");
+        } else {
+            tracing::error!(
+                message_id = "Py4hNd7S",
+                error_code = result.0,
+                family = family_name(family),
+                "SetIpInterfaceEntry failed to turn off duplicate address detection"
+            );
+            success = Err(());
+        }
+    }
+    success
+}
+
 pub fn set_low_metric(adapter: &wintun::Adapter, ipv6: bool) -> Result<(), ()> {
     set_metric(adapter, false, 1, ipv6)?;
     tracing::info!(message_id = "frfGU26w", "Successfully set interface metric to 1");

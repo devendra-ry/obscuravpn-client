@@ -35,8 +35,8 @@ pub struct Tun {
     session: Arc<wintun::Session>,
     read_task: Mutex<Option<AbortOnDrop>>,
     dns_routes: Mutex<BTreeSet<IpAddr>>,
-    /// The MTU and addresses that this process last set on the adapter. Each one costs a `netsh` process (about 70 ms),
-    /// so a config with the same ones does not set them again.
+    /// The MTU and addresses that this process last set on the adapter, so that a config with the same ones does not
+    /// set them again.
     applied_addresses: Mutex<Option<(u16, Ipv4Addr, Option<Ipv6Network>)>>,
 }
 

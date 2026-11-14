@@ -175,6 +175,7 @@ mod tests {
             ipv4_metric,
             ipv4_address: Some(Ipv4Addr::new(10, 0, 0, 2)),
             gateways: if gateway { vec![Ipv4Addr::new(10, 0, 0, 1).into()] } else { Vec::new() },
+            dhcp_enabled: true,
         }
     }
 

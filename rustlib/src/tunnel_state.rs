@@ -20,7 +20,7 @@ use crate::manager::ManagerTrafficStats;
 use crate::net::NetworkInterface;
 use crate::network_config::{DnsContentBlock, OsNetworkConfig, TunnelNetworkConfig};
 use crate::os::os_trait::Os;
-use crate::quicwg::{QuicWgConnPacketSender, QuicWgReceiveError, QuicWgTrafficStats};
+use crate::quicwg::{QuicWgConnPacketSender, QuicWgConnectError, QuicWgReceiveError, QuicWgTrafficStats};
 use crate::relay_selection::RelayTransport;
 use crate::udp_tunnel::handshake_retry_delay;
 use crate::wake_instant::WakeInstant;
@@ -359,6 +359,9 @@ impl TunnelState {
                                 Some(Err(error)) => {
                                     tracing::error!(message_id = "OfLfwKhf", ?error, "failed to connect");
                                     let udp_handshake_failed = matches!(error, TunnelConnectError::UdpHandshakeFailed);
+                                    if exit_failed(&error) {
+                                        selection_state.last_selected_failed();
+                                    }
                                     tunnel_state.send_modify(|tunnel_state| tunnel_state.set_connect_error(error));
                                     if udp_handshake_failed {
                                         // Each attempt makes and deletes an API tunnel, so wait longer after each
@@ -386,7 +389,7 @@ impl TunnelState {
                                         tunnel.id =% connection.tunnel_id,
                                         "connected successfully"
                                     );
-                                    selection_state = ExitSelectionState::default();
+                                    selection_state.new_round();
                                     udp_handshake_failures = 0;
                                     connected_at = WakeInstant::now();
                                     ControlFlow::Continue(Connected {
@@ -402,6 +405,7 @@ impl TunnelState {
                     };
                     if let ControlFlow::Continue(connected) = cf {
                         let tunnel_id = connected.tunnel_id;
+                        let exit_id = connected.exit.id.clone();
                         let conn = connected.conn.clone();
                         // Reached connected state, set OS network config and update published tunnel state
                         let os_network_config = OsNetworkConfig::new(
@@ -452,6 +456,10 @@ impl TunnelState {
                             }
                             let up_time = WakeInstant::now().saturating_duration_since(connected_at);
                             connect_failures = failures_after_tunnel(connect_failures, disconnect_reason.is_some(), up_time);
+                            if matches!(disconnect_reason, Some(QuicWgReceiveError::TunnelDead)) && up_time < STABLE_TUNNEL_TIME {
+                                // The exit stopped answering soon after the connect: the next tunnel goes elsewhere.
+                                selection_state.exit_failed(exit_id);
+                            }
                         }
                     }
                 }
@@ -466,7 +474,7 @@ impl TunnelState {
                     relay_transport: _,
                     os_network_config_refresh: _,
                 } => {
-                    selection_state = ExitSelectionState::default();
+                    selection_state.new_round();
                     udp_handshake_failures = 0;
                     connect_failures = 0;
                     tracing::info!(message_id = "axfILRQy", "reached disconnected target state");
@@ -497,7 +505,7 @@ impl TunnelState {
                     #[cfg(not(target_os = "linux"))]
                     let _ = (tailscale_bypass, wireguard_bypass);
                     tracing::warn!(message_id = "0K9Nep8g", "stuck in connecting state without target interface");
-                    selection_state = ExitSelectionState::default();
+                    selection_state.new_round();
                     tunnel_state.send_modify(|tunnel_state| tunnel_state.set_connect_error(TunnelConnectError::NoInternet));
                     // A connect that starts without a network captures traffic too (Ombra), so apps do not send outside
                     // the tunnel when the network comes. A TUN that is up stays as it is.
@@ -599,6 +607,16 @@ const STABLE_TUNNEL_TIME: Duration = Duration::from_secs(15);
 /// adds one. Upstream starts over at each connect, so a path that lets the handshake through and then drops the tunnel
 /// gives a full connect, with its relay race and API tunnel, every few seconds without end. `up_time` includes sleep:
 /// a tunnel that dies while the phone sleeps did not break soon.
+/// A connect error that points at the exit: the WireGuard handshake with it, or its first pong, failed. Errors of the
+/// relay, the API or the network say nothing about the exit.
+fn exit_failed(error: &TunnelConnectError) -> bool {
+    matches!(
+        error,
+        TunnelConnectError::UdpHandshakeFailed
+            | TunnelConnectError::TunnelConnect(QuicWgConnectError::WireguardHandshake(_) | QuicWgConnectError::FirstPong(_))
+    )
+}
+
 fn failures_after_tunnel(failures: u32, broke: bool, up_time: Duration) -> u32 {
     if broke && up_time < STABLE_TUNNEL_TIME {
         failures.saturating_add(1)

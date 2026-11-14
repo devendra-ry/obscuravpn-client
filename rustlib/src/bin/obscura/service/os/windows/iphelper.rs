@@ -7,6 +7,10 @@ use windows::Win32::NetworkManagement::IpHelper::{
     DNS_INTERFACE_SETTINGS, DNS_INTERFACE_SETTINGS_VERSION1, DNS_SETTING_NAMESERVER, SetInterfaceDnsSettings,
 };
 use windows::Win32::NetworkManagement::IpHelper::{GetIpInterfaceEntry, MIB_IPINTERFACE_ROW, SetIpInterfaceEntry};
+use windows::Win32::NetworkManagement::IpHelper::{
+    DeleteUnicastIpAddressEntry, FreeMibTable, GetUnicastIpAddressTable, MIB_UNICASTIPADDRESS_TABLE,
+};
+use windows::Win32::Networking::WinSock::IpPrefixOriginManual;
 use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 use windows::Win32::Networking::WinSock::{ADDRESS_FAMILY, AF_INET, AF_INET6, IN_ADDR, IN6_ADDR, IN6_ADDR_0, SOCKADDR_IN, SOCKADDR_IN6};
 use windows::Win32::UI::Shell::SHGetKnownFolderPath;
@@ -302,7 +306,50 @@ pub async fn set_ipv6_address(adapter: &wintun::Adapter, ipv6: Ipv6Network) -> R
     let mut cmd = tokio::process::Command::new(&netsh);
     cmd.args(["interface", "ipv6", "set", "address", &name])
         .arg(format!("address={}/{}", ipv6.ip(), ipv6.prefix()));
-    run_command(&mut cmd, "netsh for IPv6", "p7nWx2kF").await
+    run_command(&mut cmd, "netsh for IPv6", "p7nWx2kF").await?;
+    // `netsh interface ipv6 set address` adds the address next to the ones of earlier tunnels (unlike IPv4, where it
+    // replaces it). Windows could then pick an earlier tunnel's address as the source, which the exit drops.
+    remove_other_manual_ipv6_addresses(adapter, ipv6.ip())
+}
+
+/// Deletes the manually set IPv6 addresses of the adapter other than `keep`. The link-local address stays.
+fn remove_other_manual_ipv6_addresses(adapter: &wintun::Adapter, keep: Ipv6Addr) -> Result<(), ()> {
+    // SAFETY: Accessing `Value` field of a union to copy the raw 64-bit LUID
+    let luid = unsafe { adapter.get_luid().Value };
+    let mut table: *mut MIB_UNICASTIPADDRESS_TABLE = std::ptr::null_mut();
+    // SAFETY: `table` is an OUT param; on success it points to a table that `FreeMibTable` frees below.
+    let error = unsafe { GetUnicastIpAddressTable(AF_INET6, &mut table) };
+    if error != NO_ERROR {
+        tracing::error!(message_id = "Bq8sLm2V", error_code = error.0, "GetUnicastIpAddressTable failed for IPv6");
+        return Err(());
+    }
+    let mut result = Ok(());
+    let mut removed = 0usize;
+    {
+        // SAFETY: on success `table` is valid and holds `NumEntries` rows.
+        let rows = unsafe { std::slice::from_raw_parts((*table).Table.as_ptr(), usize::try_from((*table).NumEntries).unwrap_or(0)) };
+        for row in rows {
+            // SAFETY: union reads of a row that the call filled; the family is IPv6.
+            let (row_luid, address) = unsafe { (row.InterfaceLuid.Value, Ipv6Addr::from(row.Address.Ipv6.sin6_addr.u.Byte)) };
+            if row_luid != luid || row.PrefixOrigin != IpPrefixOriginManual || address == keep {
+                continue;
+            }
+            // SAFETY: `row` is a complete row from the table; the call only reads it.
+            let error = unsafe { DeleteUnicastIpAddressEntry(row) };
+            if error == NO_ERROR || error == ERROR_NOT_FOUND {
+                removed += 1;
+            } else {
+                tracing::error!(message_id = "Hn3wTq7C", error_code = error.0, "failed to delete an earlier tunnel's IPv6 address");
+                result = Err(());
+            }
+        }
+    }
+    // SAFETY: `table` came from `GetUnicastIpAddressTable` and is freed once.
+    unsafe { FreeMibTable(table.cast()) };
+    if removed > 0 {
+        tracing::info!(message_id = "Wd5kPz9R", removed, "deleted earlier tunnels' IPv6 addresses");
+    }
+    result
 }
 
 pub async fn set_mtu(adapter: &wintun::Adapter, mtu: u16, ipv6: bool) -> Result<(), ()> {

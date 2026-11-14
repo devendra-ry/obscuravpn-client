@@ -1254,9 +1254,7 @@ impl WgSender {
             WgSender::TcpTls { traffic_state } => {
                 traffic_state.send_modify(|traffic_state| {
                     for wg_message in wg_messages {
-                        if traffic_state.queued_packets.len() < 1000 {
-                            traffic_state.queued_packets.push_back(wg_message);
-                        }
+                        traffic_state.queue_packet(wg_message);
                     }
                 });
             }
@@ -1363,15 +1361,35 @@ fn try_receive_udp(socket: &UdpSocket, arena: &Mutex<BytesArena>) -> io::Result<
     }
 }
 
+/// The WireGuard bytes that wait for the TCP/TLS writer, at most. Upstream allows 1000 packets (about 1.4 MB): once the
+/// TCP connection to the relay is the bottleneck, that queue adds hundreds of ms to the inner TCP's round trip, and
+/// the inner TCP learns of the congestion only when a whole burst is dropped at once (slow, uneven upload). The same
+/// limit as the QUIC datagram send queue (Ombra patch P4, B3).
+const TCP_TLS_SEND_QUEUE_BYTES: usize = 256 * 1024;
+
 #[derive(Default)]
 struct WgTrafficState {
     queued_oks: VecDeque<MessageContext>,
     queued_packets: VecDeque<Bytes>,
+    queued_packet_bytes: usize,
 }
 
 impl WgTrafficState {
     fn is_empty(&self) -> bool {
         self.queued_oks.is_empty() && self.queued_packets.is_empty()
+    }
+
+    /// Drops the packet when the queue is full, as a router does, so that the inner TCP slows down.
+    fn queue_packet(&mut self, wg_message: Bytes) {
+        if self.queued_packet_bytes + wg_message.len() <= TCP_TLS_SEND_QUEUE_BYTES {
+            self.queued_packet_bytes += wg_message.len();
+            self.queued_packets.push_back(wg_message);
+        }
+    }
+
+    fn take_packets(&mut self) -> std::collections::vec_deque::Drain<'_, Bytes> {
+        self.queued_packet_bytes = 0;
+        self.queued_packets.drain(..)
     }
 }
 
@@ -1399,7 +1417,7 @@ async fn write_queued_messages(
         for context_id in queued.queued_oks.drain(..) {
             encode_message(&mut buffer, MessageCode::Response(RelayResponseCode::Ok), context_id, &[])?;
         }
-        for packet in queued.queued_packets.drain(..) {
+        for packet in queued.take_packets() {
             encode_message(
                 &mut buffer,
                 MessageCode::Op(RelayOpCode::WireGuard),
@@ -1636,6 +1654,21 @@ mod tests {
         assert_eq!(wg_state.tick_stats.wg_tx_fragmented_count.0, 0);
         assert_eq!(wg_state.tick_stats.wg_rx_fragment_reassembled_count.0, 0);
         assert!(wg_state.fragment_buffer.is_some());
+    }
+
+    #[test]
+    fn tcp_tls_send_queue_drops_packets_beyond_its_byte_limit() {
+        let mut state = WgTrafficState::default();
+        let packet = Bytes::from(vec![0u8; 1312]);
+        for _ in 0..1000 {
+            state.queue_packet(packet.clone());
+        }
+        assert_eq!(state.queued_packets.len(), TCP_TLS_SEND_QUEUE_BYTES / 1312);
+        assert!(state.queued_packet_bytes <= TCP_TLS_SEND_QUEUE_BYTES);
+        assert_eq!(state.take_packets().count(), TCP_TLS_SEND_QUEUE_BYTES / 1312);
+        // Taking the packets frees the whole limit again.
+        state.queue_packet(packet);
+        assert_eq!((state.queued_packets.len(), state.queued_packet_bytes), (1, 1312));
     }
 
     #[tokio::test]

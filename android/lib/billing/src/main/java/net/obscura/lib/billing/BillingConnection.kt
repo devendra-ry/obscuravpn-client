@@ -35,7 +35,7 @@ internal class BillingConnection<T>(
             .enablePendingPurchases(
                 PendingPurchasesParams.newBuilder()
                     .enableOneTimeProducts() // This is mandatory
-                    .build()
+                    .build(),
             )
             .build()
 
@@ -58,7 +58,7 @@ internal class BillingConnection<T>(
                 override fun onBillingServiceDisconnected() {
                     log.info("billing client disconnected")
                 }
-            }
+            },
         )
     }
 

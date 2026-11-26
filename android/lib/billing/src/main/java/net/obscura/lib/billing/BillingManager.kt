@@ -93,10 +93,10 @@ class BillingManager(context: Context) {
                             QueryProductDetailsParams.Product.newBuilder()
                                 .setProductId(productId)
                                 .setProductType(BillingClient.ProductType.SUBS)
-                                .build()
-                        )
+                                .build(),
+                        ),
                     )
-                    .build()
+                    .build(),
             )
         return when (result.billingResult.responseCode) {
             BillingClient.BillingResponseCode.OK -> {
@@ -182,7 +182,8 @@ class BillingManager(context: Context) {
             }
     }
 
-    fun destroy() =
-        runCatching { this.connection.destroy() }
-            .onFailure { log.error("failed to end billing connection: ${it.message}") }
+    fun destroy() = runCatching {
+        this.connection.destroy()
+    }
+        .onFailure { log.error("failed to end billing connection: ${it.message}") }
 }

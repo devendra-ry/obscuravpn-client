@@ -34,6 +34,8 @@ pub enum ConnectErrorCode {
     NoSlotsLeft,
     NotLoggedIn,
     Other,
+    /// Speed mode (Ombra patch P5): the exit did not answer the WireGuard handshake over UDP in about 5 s.
+    UdpHandshakeFailed,
 }
 
 impl ConnectErrorCode {
@@ -90,7 +92,8 @@ impl From<&TunnelConnectError> for ConnectErrorCode {
                 },
             },
             TunnelConnectError::NoInternet => Self::NoInternet,
-            TunnelConnectError::RelaySelection(RelaySelectionError::NoSuccess) => Self::NoRelay,
+            TunnelConnectError::UdpHandshakeFailed => Self::UdpHandshakeFailed,
+            TunnelConnectError::RelaySelection(RelaySelectionError::NoSuccess | RelaySelectionError::NoMatchingRelay) => Self::NoRelay,
             TunnelConnectError::NetworkConfig(_)
             | TunnelConnectError::NoExit
             | TunnelConnectError::SetOsNetworkConfig
@@ -131,14 +134,30 @@ pub enum TunnelConnectError {
     UnexpectedRelay,
     #[error("api returned unexpected tunnel kind")]
     UnexpectedTunnelKind,
+    #[error("no WireGuard handshake over UDP")]
+    UdpHandshakeFailed,
 }
 
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error(transparent)]
-    ApiClient(#[from] ClientError),
+    ApiClient(ClientError),
     #[error("not logged in")]
     NotLoggedIn,
+}
+
+/// Drops the response body of a `ProtocolError` and the values in its JSON error (Ombra patch P3). An answer that does
+/// not decode can hold the account number, a token or tunnel addresses, and these errors go into logs.
+impl From<ClientError> for ApiError {
+    fn from(mut error: ClientError) -> Self {
+        if let ClientError::ProtocolError(protocol_error) = &mut error {
+            protocol_error.raw.clear();
+            if let Some(json_error) = protocol_error.source.downcast_ref::<serde_json::Error>() {
+                protocol_error.source = anyhow::anyhow!(crate::manager_cmd::redacted_json_error(json_error));
+            }
+        }
+        Self::ApiClient(error)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -171,6 +190,8 @@ impl ApiError {
 pub enum RelaySelectionError {
     #[error("all relay connections failed")]
     NoSuccess,
+    #[error("no relay matches the relay selector")]
+    NoMatchingRelay,
     #[error("quic setup: {0}")]
     QuicSetup(anyhow::Error),
     #[error("udp socket setup: {0}")]
@@ -186,5 +207,24 @@ pub struct ErrorAt<T: std::error::Error> {
 impl<T: std::error::Error> From<T> for ErrorAt<T> {
     fn from(error: T) -> Self {
         Self { error, at: Instant::now() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_selector_without_match_is_no_relay() {
+        let error = TunnelConnectError::RelaySelection(RelaySelectionError::NoMatchingRelay);
+        assert_eq!(ConnectErrorCode::from(&error), ConnectErrorCode::NoRelay);
+    }
+
+    #[test]
+    fn udp_handshake_failure_has_its_own_code() {
+        let code = ConnectErrorCode::from(&TunnelConnectError::UdpHandshakeFailed);
+        assert_eq!(code, ConnectErrorCode::UdpHandshakeFailed);
+        assert_eq!(serde_json::to_value(code).unwrap(), serde_json::json!("udpHandshakeFailed"));
+        assert_eq!(code.as_static_str(), "udpHandshakeFailed");
     }
 }

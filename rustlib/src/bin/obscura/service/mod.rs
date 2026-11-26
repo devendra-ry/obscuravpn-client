@@ -47,9 +47,15 @@ pub async fn run(
         }
     };
     let src_version = release_version().to_owned();
+    // Windows: a config that an earlier build encrypted becomes plain text again (`os::windows::config_key`), so the
+    // official service can read it too.
+    #[cfg(target_os = "windows")]
+    os::windows::config_key::decrypt_config(Path::new(&args.config_dir), scm_start_reason.is_some())
+        .map_err(|()| anyhow::anyhow!("the config is encrypted and this process cannot open it"))?;
     let manager = Manager::new(
         args.config_dir.into(),
         wg_key_store,
+        None,
         format!("obscura.net/{}/{src_version}", std::env::consts::OS),
         manager_os_impl.clone(),
         os_impl.network_interface(),
@@ -57,6 +63,19 @@ pub async fn run(
         !is_restart,
     )
     .context("failed to create manager")?;
+
+    // Windows: a resume from sleep checks the tunnel at once and ends a wait between connects.
+    #[cfg(target_os = "windows")]
+    tokio::spawn({
+        let manager = manager.clone();
+        async move {
+            loop {
+                os::windows::RESUMED.notified().await;
+                tracing::info!(message_id = "Gp5sWn2K", "resumed from sleep, waking the tunnel");
+                manager.wake();
+            }
+        }
+    });
 
     let mut shutdown = std::pin::pin!(async {
         match shutdown {

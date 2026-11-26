@@ -11,8 +11,10 @@ use crate::client_state::AccountStatus;
 use crate::config::cached::ConfigCached;
 use crate::config::dns_cache::DnsCache;
 use crate::config::feature_flags::FeatureFlags;
+use crate::config::sealed::{self, ConfigKey};
 use crate::exit_selection::ExitSelector;
 use crate::manager::TunnelArgs;
+use crate::manager_cmd::redacted_json_error;
 use crate::network_config::{DnsConfig, DnsContentBlock};
 use crate::wg_key_store::{PlaintextWgSecretKey, SealedWgSecretKey, WgKeyStore};
 use boringtun::x25519::StaticSecret;
@@ -25,6 +27,7 @@ use std::time::Duration;
 use strum::EnumIs;
 use tempfile::{NamedTempFile, PersistError};
 use thiserror::Error;
+use uuid::Uuid;
 
 pub(super) const CONFIG_FILE: &str = "config.json";
 
@@ -40,21 +43,28 @@ pub enum ConfigSaveError {
     TempFileWriteError(std::io::Error),
     #[error("could not persist temporary file: {0}")]
     TempFilePersistError(PersistError),
+    #[error("could not encrypt config")]
+    EncryptError,
 }
 
 #[derive(Debug, Error)]
 pub enum ConfigLoadError {
     #[error("could not read config: {0}")]
     ReadError(std::io::Error),
-    #[error("could not deserialize config: {0}")]
+    // Not serde's message: it can quote values of the file, such as the account number or the auth token.
+    #[error("could not deserialize config: {}", redacted_json_error(.0))]
     DeserializeError(serde_json::Error),
     #[error("config not save config: {0}")]
     SaveEror(ConfigSaveError),
+    /// No key, or a key that does not open the file (Ombra patch P13). The file is reset like one that does not parse.
+    #[error("could not decrypt config")]
+    DecryptError,
 }
 
-fn try_load(path: &Path) -> Result<Option<Config>, ConfigLoadError> {
-    let file = match fs::File::open(path) {
-        Ok(f) => f,
+/// The config and whether the file was encrypted.
+fn try_load(path: &Path, key: Option<&ConfigKey>) -> Result<Option<(Config, bool)>, ConfigLoadError> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(err) => {
             if err.kind() == ErrorKind::NotFound {
                 return Ok(None);
@@ -63,8 +73,14 @@ fn try_load(path: &Path) -> Result<Option<Config>, ConfigLoadError> {
         }
     };
 
-    match serde_json::from_reader(file) {
-        Ok(c) => Ok(Some(c)),
+    let encrypted = sealed::is_sealed(&bytes);
+    let json = if encrypted {
+        key.and_then(|key| key.open(&bytes)).ok_or(ConfigLoadError::DecryptError)?
+    } else {
+        bytes
+    };
+    match serde_json::from_slice(&json) {
+        Ok(c) => Ok(Some((c, encrypted))),
         Err(err) => Err(ConfigLoadError::DeserializeError(err)),
     }
 }
@@ -73,24 +89,41 @@ fn try_load(path: &Path) -> Result<Option<Config>, ConfigLoadError> {
 ///
 /// TODO: Remove after some migration period.
 pub fn load(config_dir: &Path, key_store: &WgKeyStore) -> Result<Config, ConfigLoadError> {
+    load_with_key(config_dir, key_store, None)
+}
+
+/// [`load`] of a file that `key` encrypts (Ombra patch P13). A plain text file, from an older version, is written
+/// again encrypted at once, and its plain text backups are deleted.
+pub fn load_with_key(config_dir: &Path, key_store: &WgKeyStore, key: Option<&ConfigKey>) -> Result<Config, ConfigLoadError> {
+    // A process that was killed in the middle of a save left its temporary file, a copy of the config with the account
+    // number and the auth token (Ombra patch P22). Only a new process can find one, so this is the place to delete it.
+    delete_files(config_dir, |name| name.starts_with(TEMP_PREFIX));
+
     let path = Path::new(config_dir).join(CONFIG_FILE);
 
-    let err = match try_load(&path) {
-        Ok(config) => {
-            let mut config = config.unwrap_or_default();
+    let err = match try_load(&path, key) {
+        Ok(loaded) => {
+            let plaintext_file = loaded.as_ref().is_some_and(|(_, encrypted)| !encrypted);
+            let mut config = loaded.map(|(config, _)| config).unwrap_or_default();
             config.wireguard_key_cache.try_set_secret_key(key_store);
             tracing::info!(
                 config.dir =? config_dir,
                 message_id = "q9XZcBvj",
                 "config::load successfully loaded the config",
             );
+            if plaintext_file && key.is_some() {
+                match save_with_key(config_dir, &config, key) {
+                    Ok(()) => delete_backups(config_dir),
+                    Err(error) => tracing::error!(message_id = "Vq3pTz8K", ?error, "could not encrypt the plain text config"),
+                }
+            }
             return Ok(config);
         }
         Err(error) => match error {
             ConfigLoadError::ReadError(_) => return Err(error),
-            ConfigLoadError::DeserializeError(_) => {
+            ConfigLoadError::DeserializeError(_) | ConfigLoadError::DecryptError => {
                 tracing::error!(
-                    ?error,
+                    %error,
                     config.path =? path,
                     message_id = "Voosh7sa",
                     "Failed to parse config, resetting.");
@@ -108,9 +141,9 @@ pub fn load(config_dir: &Path, key_store: &WgKeyStore) -> Result<Config, ConfigL
     };
 
     // This may collide if failing in a tight loop, that is fine. Possibly even a feature.
-    let backup_path = Path::new(config_dir).join(format!("config-backup-{}.json", Utc::now().format("%Y-%m-%dT%H-%M-%S%.3f")));
+    let backup_path = Path::new(config_dir).join(format!("{BACKUP_PREFIX}{}.json", Utc::now().format("%Y-%m-%dT%H-%M-%S%.3f")));
 
-    // TODO: Do we want to try to clean up old backup configs?
+    // Ombra deletes them at an account change (`delete_backups`).
 
     match fs::rename(&path, &backup_path) {
         Ok(()) => {}
@@ -128,12 +161,67 @@ pub fn load(config_dir: &Path, key_store: &WgKeyStore) -> Result<Config, ConfigL
     let default_config = Default::default();
 
     // Ensure that we can write the config. Otherwise we may just crash when the user logs in if the disk is full or some other endemic issue.
-    save(config_dir, &default_config).map_err(ConfigLoadError::SaveEror)?;
+    save_with_key(config_dir, &default_config, key).map_err(ConfigLoadError::SaveEror)?;
 
     Ok(default_config)
 }
 
+/// Whether the config file of `config_dir` exists and is encrypted (Ombra patch P13).
+pub fn is_encrypted(config_dir: &Path) -> bool {
+    use std::io::Read;
+    let mut start = Vec::new();
+    fs::File::open(config_dir.join(CONFIG_FILE))
+        .and_then(|file| file.take(64).read_to_end(&mut start))
+        .is_ok_and(|_| sealed::is_sealed(&start))
+}
+
+/// Writes an encrypted config file of `config_dir` again as plain text (Windows no longer encrypts it, see the
+/// service's `config_key`). `Ok(false)`: there was no encrypted file. The JSON is the one that the encrypting save wrote,
+/// so nothing changes in it.
+pub fn decrypt_config_file(config_dir: &Path, key: &ConfigKey) -> Result<bool, ConfigLoadError> {
+    let path = config_dir.join(CONFIG_FILE);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(ConfigLoadError::ReadError(error)),
+    };
+    if !sealed::is_sealed(&bytes) {
+        return Ok(false);
+    }
+    let json = key.open(&bytes).ok_or(ConfigLoadError::DecryptError)?;
+    let config: Config = serde_json::from_slice(&json).map_err(ConfigLoadError::DeserializeError)?;
+    save(config_dir, &config).map_err(ConfigLoadError::SaveEror)?;
+    Ok(true)
+}
+
+const BACKUP_PREFIX: &str = "config-backup-";
+
+/// The name prefix of the `NamedTempFile` that a save writes before the rename.
+const TEMP_PREFIX: &str = ".tmp";
+
+/// Deletes the copies of config files that did not parse (Ombra). They can hold an account number and an auth token,
+/// so they must not stay after a logout or an account change.
+pub fn delete_backups(config_dir: &Path) {
+    delete_files(config_dir, |name| name.starts_with(BACKUP_PREFIX) && name.ends_with(".json"));
+}
+
+fn delete_files(config_dir: &Path, is_copy: impl Fn(&str) -> bool) {
+    let Ok(entries) = fs::read_dir(config_dir) else { return };
+    for entry in entries.flatten() {
+        if entry.file_name().to_str().is_some_and(&is_copy)
+            && let Err(error) = fs::remove_file(entry.path())
+        {
+            tracing::error!(message_id = "Rb2nXc6M", ?error, "could not delete a copy of the config");
+        }
+    }
+}
+
 pub fn save(config_dir: &Path, config: &Config) -> Result<(), ConfigSaveError> {
+    save_with_key(config_dir, config, None)
+}
+
+/// [`save`], encrypted with `key` when there is one (Ombra patch P13).
+pub fn save_with_key(config_dir: &Path, config: &Config, key: Option<&ConfigKey>) -> Result<(), ConfigSaveError> {
     let config = config.clone();
     let json = match serde_json::to_vec_pretty(&config) {
         Ok(json) => json,
@@ -146,6 +234,16 @@ pub fn save(config_dir: &Path, config: &Config) -> Result<(), ConfigSaveError> {
             );
             return Err(ConfigSaveError::SerializeError(error));
         }
+    };
+    let json = match key {
+        None => json,
+        Some(key) => match key.seal(&json) {
+            Some(sealed) => sealed,
+            None => {
+                tracing::error!(config.dir =? config_dir, message_id = "Hn4cWq2L", "config::save could not encrypt config");
+                return Err(ConfigSaveError::EncryptError);
+            }
+        },
     };
 
     if let Err(error) = create_dir_all(config_dir) {
@@ -288,9 +386,20 @@ pub struct Config {
     pub cached_account_status: Option<AccountStatus>,
     #[serde(skip)]
     pub force_tcp_tls_relay_transport: (), // Removed
+    /// The Speed mode tunnels that this client created and did not delete yet (Ombra patch P5). Each one holds a slot
+    /// of the account until it is deleted. Written before the create call, so a crash leaves no unknown tunnel.
+    #[serde(deserialize_with = "crate::serde_safe::deserialize")]
+    pub owned_udp_tunnel_ids: Vec<Uuid>,
+    /// The WireGuard key rotates once it is this old, 0 at each connect (Ombra patch P14). `None`: 30 days.
+    #[serde(deserialize_with = "crate::serde_safe::deserialize")]
+    pub wg_key_max_age_secs: Option<u64>,
 }
 
 impl Config {
+    pub fn wg_key_max_age(&self) -> Duration {
+        self.wg_key_max_age_secs.map_or(DEFAULT_WG_KEY_MAX_AGE, Duration::from_secs)
+    }
+
     pub fn migrate(&mut self) {
         if self.last_chosen_exit_selector == (ExitSelector::Any {})
             && let Some(exit) = &self.last_chosen_exit
@@ -346,6 +455,7 @@ pub struct ConfigDebug {
     pub has_account_id: bool,
     pub has_cached_auth_token: bool,
     pub auto_connect: bool,
+    pub wg_key_max_age_secs: Option<u64>,
 }
 
 impl From<Config> for ConfigDebug {
@@ -380,6 +490,8 @@ impl From<Config> for ConfigDebug {
             force_tcp_tls_relay_transport: (),
             tunnel_active,
             tunnel_args,
+            owned_udp_tunnel_ids: _,
+            wg_key_max_age_secs,
         } = config;
         Self {
             api_url,
@@ -404,6 +516,7 @@ impl From<Config> for ConfigDebug {
             auto_connect,
             tunnel_active,
             tunnel_args,
+            wg_key_max_age_secs,
         }
     }
 }
@@ -502,6 +615,8 @@ impl core::fmt::Debug for WireGuardKeyCache {
     }
 }
 
+pub const DEFAULT_WG_KEY_MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24 * 30); // 30 days
+
 #[derive(Clone, Copy, Debug)]
 pub enum RotationReason {
     ApiRequested,
@@ -587,10 +702,11 @@ impl WireGuardKeyCache {
         }
     }
     pub fn use_key_pair(&mut self, key_store: &WgKeyStore) -> (StaticSecret, WgPubkey) {
-        let (secret_key, public_key) = self.ensure_key_pair(key_store);
-        let now = SystemTime::now();
-        self.first_use.get_or_insert(now);
-        (secret_key, public_key)
+        self.ensure_key_pair(key_store)
+    }
+    /// The key carried a tunnel that connected (Ombra patch P36). Only now does its age start: a failed attempt is no use.
+    pub fn mark_used(&mut self) {
+        self.first_use.get_or_insert_with(SystemTime::now);
     }
     pub fn rotate_now(&mut self, reason: RotationReason, key_store: &WgKeyStore) {
         self.rotate_now_internal(reason, key_store);
@@ -635,9 +751,9 @@ impl WireGuardKeyCache {
         *self = Self { key_pair: Some(key_pair), first_use: None, registered_at: None, old_public_keys };
         (static_secret, public_key)
     }
-    pub fn rotate_if_required(&mut self, key_store: &WgKeyStore) {
-        const MAX_AGE: Duration = Duration::from_secs(60 * 60 * 24 * 30); // 30 days
-        if self.first_use.is_some_and(|t| t.elapsed().is_ok_and(|age| age > MAX_AGE)) {
+    /// Rotates a key that was first used `max_age` ago or earlier. A key that was never used stays.
+    pub fn rotate_if_required(&mut self, max_age: Duration, key_store: &WgKeyStore) {
+        if self.first_use.is_some_and(|t| t.elapsed().is_ok_and(|age| age >= max_age)) {
             self.rotate_now(RotationReason::ScheduleBased, key_store);
         } else {
             tracing::info!(message_id = "i85mYSwz", "no wireguard key pair rotation required");
@@ -661,5 +777,39 @@ impl WireGuardKeyCache {
             self.registered_at = Some(SystemTime::now());
         }
         self.old_public_keys.retain(|b| !removed_public_keys.contains(b));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DAY: Duration = Duration::from_secs(60 * 60 * 24);
+
+    /// Ombra patch P14: the max age comes from the caller; 0 rotates a used key at once, never an unused one.
+    #[test]
+    fn a_key_rotates_once_it_is_as_old_as_the_max_age() {
+        let store = WgKeyStore::None;
+        let mut cache = WireGuardKeyCache::default();
+        let (_, first) = cache.use_key_pair(&store);
+        cache.rotate_if_required(Duration::ZERO, &store);
+        assert_eq!(cache.use_key_pair(&store).1, first, "a failed attempt is no use");
+        cache.mark_used();
+        cache.rotate_if_required(DAY, &store);
+        assert_eq!(cache.use_key_pair(&store).1, first, "used less than a day ago");
+
+        cache.first_use = Some(SystemTime::now() - 2 * DAY);
+        cache.rotate_if_required(DEFAULT_WG_KEY_MAX_AGE, &store);
+        assert_eq!(cache.use_key_pair(&store).1, first, "younger than 30 days");
+        cache.rotate_if_required(DAY, &store);
+        assert_eq!(cache.first_use, None);
+
+        cache.rotate_if_required(Duration::ZERO, &store);
+        let (_, second) = cache.use_key_pair(&store);
+        cache.mark_used();
+        assert_ne!(second, first);
+        assert_eq!(cache.old_public_keys, vec![first], "the unused key did not rotate");
+        cache.rotate_if_required(Duration::ZERO, &store);
+        assert_ne!(cache.use_key_pair(&store).1, second, "a used key rotates at once");
     }
 }

@@ -4,11 +4,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use windows::Win32::Foundation::{ERROR_NOT_FOUND, ERROR_OBJECT_ALREADY_EXISTS, NO_ERROR, WIN32_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{CreateIpForwardEntry2, DeleteIpForwardEntry2, InitializeIpForwardEntry, MIB_IPFORWARD_ROW2};
 use windows::Win32::NetworkManagement::IpHelper::{
+    CreateUnicastIpAddressEntry, DeleteUnicastIpAddressEntry, FreeMibTable, GetUnicastIpAddressTable, InitializeUnicastIpAddressEntry,
+    MIB_UNICASTIPADDRESS_ROW, MIB_UNICASTIPADDRESS_TABLE,
+};
+use windows::Win32::NetworkManagement::IpHelper::{
     DNS_INTERFACE_SETTINGS, DNS_INTERFACE_SETTINGS_VERSION1, DNS_SETTING_NAMESERVER, SetInterfaceDnsSettings,
 };
 use windows::Win32::NetworkManagement::IpHelper::{GetIpInterfaceEntry, MIB_IPINTERFACE_ROW, SetIpInterfaceEntry};
 use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 use windows::Win32::Networking::WinSock::{ADDRESS_FAMILY, AF_INET, AF_INET6, IN_ADDR, IN6_ADDR, IN6_ADDR_0, SOCKADDR_IN, SOCKADDR_IN6};
+use windows::Win32::Networking::WinSock::{IpDadStatePreferred, IpPrefixOriginManual};
 use windows::Win32::UI::Shell::SHGetKnownFolderPath;
 
 /// The individual routes cover half of the respective address space, which gives them priority over the default route without replacing it. We don't want to replace the default route, because:
@@ -235,6 +240,53 @@ fn set_metric(adapter: &wintun::Adapter, automatic: bool, metric: u32, ipv6: boo
     success
 }
 
+/// Turns off duplicate address detection on the tunnel interface, as WireGuard for Windows does. With it, every new
+/// tunnel address stays "tentative" for about 3 s, and no socket can use it as a source: DNS and all other traffic
+/// fail although the tunnel is up. Nothing else can hold an address on a point-to-point tunnel.
+pub fn disable_duplicate_address_detection(adapter: &wintun::Adapter, ipv6: bool) -> Result<(), ()> {
+    let families: &[ADDRESS_FAMILY] = if ipv6 { &[AF_INET, AF_INET6] } else { &[AF_INET] };
+    let mut success = Ok(());
+    for &family in families {
+        let mut row = match get_ip_interface_entry(adapter, family) {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::error!(
+                    message_id = "Tf6qWc2N",
+                    error_code = error.0,
+                    family = family_name(family),
+                    "GetIpInterfaceEntry failed"
+                );
+                success = Err(());
+                continue;
+            }
+        };
+        if row.DadTransmits == 0 {
+            continue;
+        }
+        // See `set_metric`.
+        row.SitePrefixLength = if family == AF_INET { 0 } else { 128 };
+        row.DadTransmits = 0;
+        // SAFETY: as in `set_metric`.
+        let result = unsafe { SetIpInterfaceEntry(&mut row) };
+        if result == NO_ERROR {
+            tracing::info!(
+                message_id = "Gm8vRx3K",
+                family = family_name(family),
+                "turned off duplicate address detection"
+            );
+        } else {
+            tracing::error!(
+                message_id = "Py4hNd7S",
+                error_code = result.0,
+                family = family_name(family),
+                "SetIpInterfaceEntry failed to turn off duplicate address detection"
+            );
+            success = Err(());
+        }
+    }
+    success
+}
+
 pub fn set_low_metric(adapter: &wintun::Adapter, ipv6: bool) -> Result<(), ()> {
     set_metric(adapter, false, 1, ipv6)?;
     tracing::info!(message_id = "frfGU26w", "Successfully set interface metric to 1");
@@ -282,44 +334,175 @@ async fn run_command(cmd: &mut tokio::process::Command, friendly_name: &str, mes
     }
 }
 
+/// The adapter's LUID.
+fn luid(adapter: &wintun::Adapter) -> u64 {
+    // SAFETY: Accessing `Value` field of a union to copy the raw 64-bit LUID
+    unsafe { adapter.get_luid().Value }
+}
+
+/// Whether DHCP is on for the adapter's IPv4 interface. A new adapter has it on, and `netsh ... source=static` turns
+/// it off (it is stored with the interface). The IP Helper API has no call for it.
+fn ipv4_dhcp_enabled(adapter: &wintun::Adapter) -> bool {
+    let luid = luid(adapter);
+    match list_network_adapters() {
+        Ok(adapters) => adapters.iter().any(|a| a.luid == luid && a.dhcp_enabled),
+        Err(error) => {
+            tracing::warn!(message_id = "Cz3pLq8W", ?error, "GetAdaptersAddresses failed, assuming DHCP is on");
+            true
+        }
+    }
+}
+
 pub async fn set_ipv4_address(adapter: &wintun::Adapter, ipv4: Ipv4Addr) -> Result<(), ()> {
-    let name = adapter
-        .get_name()
-        .map_err(|error| tracing::error!(message_id = "fUqTnRC8", ?error, "failed to get adapter name"))?;
-    let netsh = get_system_directory().join("netsh.exe");
-    let mut cmd = tokio::process::Command::new(&netsh);
-    cmd.args(["interface", "ipv4", "set", "address", &name, "source=static"])
-        .arg(format!("address={ipv4}"))
-        .arg("mask=255.255.255.255");
-    run_command(&mut cmd, "netsh for IPv4", "2Yndy7Y5").await
+    if ipv4_dhcp_enabled(adapter) {
+        // Once per adapter: this also turns DHCP off, which nothing in the IP Helper API does.
+        let name = adapter
+            .get_name()
+            .map_err(|error| tracing::error!(message_id = "fUqTnRC8", ?error, "failed to get adapter name"))?;
+        let netsh = get_system_directory().join("netsh.exe");
+        let mut cmd = tokio::process::Command::new(&netsh);
+        cmd.args(["interface", "ipv4", "set", "address", &name, "source=static"])
+            .arg(format!("address={ipv4}"))
+            .arg("mask=255.255.255.255");
+        tracing::info!(message_id = "Fe7kWd2M", "turning DHCP off on the tunnel adapter via netsh");
+        run_command(&mut cmd, "netsh for IPv4", "2Yndy7Y5").await?;
+    }
+    set_unicast_address(adapter, IpAddr::V4(ipv4), 32)
 }
 
 pub async fn set_ipv6_address(adapter: &wintun::Adapter, ipv6: Ipv6Network) -> Result<(), ()> {
-    let name = adapter
-        .get_name()
-        .map_err(|error| tracing::error!(message_id = "k3mRv8wQ", ?error, "failed to get adapter name"))?;
-    let netsh = get_system_directory().join("netsh.exe");
-    let mut cmd = tokio::process::Command::new(&netsh);
-    cmd.args(["interface", "ipv6", "set", "address", &name])
-        .arg(format!("address={}/{}", ipv6.ip(), ipv6.prefix()));
-    run_command(&mut cmd, "netsh for IPv6", "p7nWx2kF").await
+    set_unicast_address(adapter, IpAddr::V6(ipv6.ip()), ipv6.prefix())
+}
+
+/// Makes `ip` the only manually set address of its family on the adapter. The link-local IPv6 address stays. The new
+/// address is usable at once ("preferred"), without duplicate address detection.
+fn set_unicast_address(adapter: &wintun::Adapter, ip: IpAddr, prefix: u8) -> Result<(), ()> {
+    let removed = remove_other_manual_addresses(adapter, ip);
+    let mut row = MIB_UNICASTIPADDRESS_ROW::default();
+    // SAFETY: `row` is an OUT param that the call fills with defaults.
+    unsafe { InitializeUnicastIpAddressEntry(&mut row) };
+    row.InterfaceLuid = NET_LUID_LH { Value: luid(adapter) };
+    match ip {
+        IpAddr::V4(ip) => row.Address.Ipv4 = make_sockaddr_in(ip),
+        IpAddr::V6(ip) => row.Address.Ipv6 = make_sockaddr_in6(ip),
+    }
+    row.OnLinkPrefixLength = prefix;
+    row.DadState = IpDadStatePreferred;
+    // SAFETY: `row` was initialized above and has the interface, address and prefix set; the call only reads it.
+    let error = unsafe { CreateUnicastIpAddressEntry(&row) };
+    let family = if ip.is_ipv4() { "IPv4" } else { "IPv6" };
+    if error == NO_ERROR || error == ERROR_OBJECT_ALREADY_EXISTS {
+        tracing::info!(message_id = "Jt4nVx6B", family, "set the tunnel address");
+        removed
+    } else {
+        tracing::error!(
+            message_id = "Nb9cRw3Y",
+            error_code = error.0,
+            family,
+            "CreateUnicastIpAddressEntry failed"
+        );
+        Err(())
+    }
+}
+
+/// Deletes the manually set addresses of `keep`'s family on the adapter, other than `keep`: those of earlier tunnels.
+/// Windows could pick one as the source, which the exit drops.
+fn remove_other_manual_addresses(adapter: &wintun::Adapter, keep: IpAddr) -> Result<(), ()> {
+    let luid = luid(adapter);
+    let family = if keep.is_ipv4() { AF_INET } else { AF_INET6 };
+    let mut table: *mut MIB_UNICASTIPADDRESS_TABLE = std::ptr::null_mut();
+    // SAFETY: `table` is an OUT param; on success it points to a table that `FreeMibTable` frees below.
+    let error = unsafe { GetUnicastIpAddressTable(family, &mut table) };
+    if error != NO_ERROR {
+        tracing::error!(
+            message_id = "Bq8sLm2V",
+            error_code = error.0,
+            family = family_name(family),
+            "GetUnicastIpAddressTable failed"
+        );
+        return Err(());
+    }
+    let mut result = Ok(());
+    let mut removed = 0usize;
+    {
+        // SAFETY: on success `table` is valid and holds `NumEntries` rows.
+        let rows = unsafe { std::slice::from_raw_parts((*table).Table.as_ptr(), usize::try_from((*table).NumEntries).unwrap_or(0)) };
+        for row in rows {
+            // SAFETY: union reads of a row that the call filled for `family`.
+            let (row_luid, address) = unsafe {
+                let address = if family == AF_INET {
+                    IpAddr::V4(Ipv4Addr::from(u32::from_be(row.Address.Ipv4.sin_addr.S_un.S_addr)))
+                } else {
+                    IpAddr::V6(Ipv6Addr::from(row.Address.Ipv6.sin6_addr.u.Byte))
+                };
+                (row.InterfaceLuid.Value, address)
+            };
+            if row_luid != luid || row.PrefixOrigin != IpPrefixOriginManual || address == keep {
+                continue;
+            }
+            // SAFETY: `row` is a complete row from the table; the call only reads it.
+            let error = unsafe { DeleteUnicastIpAddressEntry(row) };
+            if error == NO_ERROR || error == ERROR_NOT_FOUND {
+                removed += 1;
+            } else {
+                tracing::error!(
+                    message_id = "Hn3wTq7C",
+                    error_code = error.0,
+                    "failed to delete an earlier tunnel's address"
+                );
+                result = Err(());
+            }
+        }
+    }
+    // SAFETY: `table` came from `GetUnicastIpAddressTable` and is freed once.
+    unsafe { FreeMibTable(table.cast()) };
+    if removed > 0 {
+        tracing::info!(
+            message_id = "Wd5kPz9R",
+            removed,
+            family = family_name(family),
+            "deleted earlier tunnels' addresses"
+        );
+    }
+    result
 }
 
 pub async fn set_mtu(adapter: &wintun::Adapter, mtu: u16, ipv6: bool) -> Result<(), ()> {
-    let name = adapter
-        .get_name()
-        .map_err(|error| tracing::error!(message_id = "gHUMlkA6", ?error, "failed to get adapter name for MTU"))?;
-    let netsh = get_system_directory().join("netsh.exe");
-
-    let families: &[&str] = if ipv6 { &["ipv4", "ipv6"] } else { &["ipv4"] };
+    let families: &[ADDRESS_FAMILY] = if ipv6 { &[AF_INET, AF_INET6] } else { &[AF_INET] };
     let mut result = Ok(());
-    for &ip_str in families {
-        let mut cmd = tokio::process::Command::new(&netsh);
-        cmd.args(["interface", ip_str, "set", "subinterface", &name])
-            .arg(format!("mtu={mtu}"))
-            .arg("store=persistent");
-        tracing::info!(message_id = "HJLqy3YD", mtu, "setting mtu via netsh");
-        result = result.and(run_command(&mut cmd, "netsh set MTU", "2NrLhFYu").await);
+    for &family in families {
+        let mut row = match get_ip_interface_entry(adapter, family) {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::error!(
+                    message_id = "Ke2mWs7P",
+                    error_code = error.0,
+                    family = family_name(family),
+                    "GetIpInterfaceEntry failed"
+                );
+                result = Err(());
+                continue;
+            }
+        };
+        if row.NlMtu == u32::from(mtu) {
+            continue;
+        }
+        // See `set_metric`.
+        row.SitePrefixLength = if family == AF_INET { 0 } else { 128 };
+        row.NlMtu = u32::from(mtu);
+        // SAFETY: as in `set_metric`.
+        let error = unsafe { SetIpInterfaceEntry(&mut row) };
+        if error == NO_ERROR {
+            tracing::info!(message_id = "HJLqy3YD", mtu, family = family_name(family), "set the tunnel MTU");
+        } else {
+            tracing::error!(
+                message_id = "2NrLhFYu",
+                error_code = error.0,
+                family = family_name(family),
+                "SetIpInterfaceEntry failed to set the MTU"
+            );
+            result = Err(());
+        }
     }
     result
 }
@@ -396,11 +579,18 @@ async fn set_dns_servers_netsh(adapter: &wintun::Adapter, dns: &[IpAddr]) -> Res
     result
 }
 
+#[link(name = "dnsapi.dll", kind = "raw-dylib", modifiers = "+verbatim")]
+unsafe extern "system" {
+    /// Undocumented, but what `ipconfig /flushdns` calls. Not in the SDK import library, hence raw-dylib.
+    fn DnsFlushResolverCache() -> i32;
+}
+
 pub async fn flush_dns_cache() -> Result<(), ()> {
-    let ipconfig = get_system_directory().join("ipconfig.exe");
-    let mut cmd = tokio::process::Command::new(&ipconfig);
-    cmd.arg("/flushdns");
-    run_command(&mut cmd, "ipconfig /flushdns", "Gx5tL9nB").await?;
+    // SAFETY: takes no arguments and returns a BOOL.
+    if unsafe { DnsFlushResolverCache() } == 0 {
+        tracing::error!(message_id = "Gx5tL9nB", "DnsFlushResolverCache failed");
+        return Err(());
+    }
     tracing::info!(message_id = "SnUcIehf", "successfully flushed DNS resolver cache");
     Ok(())
 }

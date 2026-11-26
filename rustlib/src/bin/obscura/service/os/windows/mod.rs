@@ -1,3 +1,4 @@
+pub mod config_key;
 mod firewall;
 mod ipc;
 pub mod nrpt;
@@ -22,6 +23,10 @@ mod iphelper;
 /// Only referenced in release builds; debug builds don't pin the IPC pipe to a package identity.
 #[cfg(not(debug_assertions))]
 pub const PACKAGE_FAMILY_NAME: &str = env!("OBSCURA_PACKAGE_FAMILY_NAME");
+
+/// The machine resumed from sleep. Set by the service control handler, which runs outside the runtime; the service
+/// loop then wakes the manager, so a dead tunnel is found in about 2 s and a wait between connects ends.
+pub static RESUMED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub struct WindowsOsImpl {
     tun: Tun,
@@ -83,7 +88,7 @@ fn test_other_error_json() {
 
 impl Os for WindowsOsImpl {
     async fn set_os_network_config(&self, network_config: OsNetworkConfig, tunnel: QuicWgConnPacketSender) -> Result<(), ()> {
-        tracing::info!(message_id = "HSSPAPbp", "manager called set_tunnel_network_config: {:?}", network_config);
+        tracing::info!(message_id = "HSSPAPbp", "manager called set_tunnel_network_config");
         let result = self
             .tun
             .set_config(network_config.mtu, network_config.ipv4, network_config.ipv6, &network_config.dns)

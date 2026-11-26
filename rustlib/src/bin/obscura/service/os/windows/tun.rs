@@ -193,6 +193,11 @@ impl Tun {
         // Attempt all config steps regardless of individual failures to minimize leaks until intentionally disconnecting.
         // E.g. DNS queries shouldn't leak because route setup failed.
         let mut result = Ok(());
+        // Every call checks the adapter itself, not a memory of earlier calls: Windows can drop the addresses (an adapter
+        // reset), and a reconnect may get the same ones. Each step is a cheap IP Helper call that skips what is already
+        // set. Duplicate address detection goes off first, so that the addresses are usable at once; a failure only
+        // delays them.
+        let _ = iphelper::disable_duplicate_address_detection(&self.adapter, ipv6.is_some());
         result = result
             .and(iphelper::set_mtu(&self.adapter, mtu, ipv6.is_some()).await)
             .and(iphelper::set_ipv4_address(&self.adapter, ipv4).await);

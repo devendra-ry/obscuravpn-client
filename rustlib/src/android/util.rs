@@ -92,3 +92,18 @@ impl<'a, 'b> std::fmt::Display for Utf8JavaStr<'a, 'b> {
         self.as_str().fmt(f)
     }
 }
+
+/// The nice value of the core threads, as Android's `THREAD_PRIORITY_DISPLAY` (Ombra patch P10).
+const CORE_THREAD_NICE: libc::c_int = -4;
+
+/// Gives the calling thread the normal Linux scheduling policy and `CORE_THREAD_NICE` (Ombra patch P10).
+pub fn use_normal_scheduling() {
+    let param = libc::sched_param { sched_priority: 0 };
+    // SAFETY: both calls change only the scheduling of the calling thread (pid 0 is the calling thread on Linux).
+    let failed =
+        unsafe { libc::sched_setscheduler(0, libc::SCHED_NORMAL, &param) != 0 || libc::setpriority(libc::PRIO_PROCESS, 0, CORE_THREAD_NICE) != 0 };
+    if failed {
+        let error = std::io::Error::last_os_error();
+        tracing::warn!(message_id = "Zt6pWq1m", ?error, "failed to set the scheduling of a core thread");
+    }
+}

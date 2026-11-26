@@ -7,7 +7,7 @@ use camino::Utf8PathBuf;
 use obscuravpn_api::{
     ClientError,
     cmd::{ApiErrorKind, AppleAssociateAccountOutput, DeleteAccountOutput, ExitList, GoogleBillingDetailsOutput, ServiceStatusOutput},
-    types::{AccountId, AccountInfo},
+    types::{AccountId, AccountInfo, OneRelay},
 };
 use serde::{Deserialize, Serialize};
 use strum::IntoStaticStr;
@@ -24,7 +24,7 @@ use crate::{
         service::{ServiceDebugBundleHandle, ServiceDebugBundleToken},
     },
     errors::{ApiError, ConfigDirty, ConfigDirtyOrApiError},
-    manager::{Manager, ManagerTrafficStats, Status, TunnelArgs},
+    manager::{Manager, ManagerTrafficStats, Status, TunnelArgsUpdate},
     network_config::DnsContentBlock,
 };
 
@@ -134,11 +134,13 @@ impl From<&ApiError> for ManagerCmdErrorCode {
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ManagerCmd {
     ApiAppleAssociateAccount {
+        #[debug(skip)]
         app_transaction_jws: String,
     },
     ApiDeleteAccount {},
     ApiGetAccountInfo {},
     ApiGoogleAssociateAccount {
+        #[debug(skip)]
         purchase_token: String,
         promo_code: Option<String>,
     },
@@ -146,6 +148,10 @@ pub enum ManagerCmd {
         promo_code: Option<String>,
     },
     ApiServiceStatus {},
+    /// Ombra patch P16: links the logged-in account to a referrer (`POST referral/use`).
+    ApiUseReferralCode {
+        code: String,
+    },
     CreateDebugBundle {
         user_feedback: Option<String>,
         bundle_info: BundleInfo,
@@ -158,18 +164,32 @@ pub enum ManagerCmd {
         #[serde_as(as = "Option<serde_with::base64::Base64>")]
         known_version: Option<Vec<u8>>,
     },
+    // Ombra patch P2: long-poll like `GetExitList`.
+    GetRelayList {
+        #[debug("{:?}", known_version.as_ref().map(|b| BASE64_STANDARD.encode(b)))]
+        #[serde_as(as = "Option<serde_with::base64::Base64>")]
+        known_version: Option<Vec<u8>>,
+    },
     GetStatus {
         known_version: Option<Uuid>,
     },
     GetTrafficStats {},
     TerminateProcess {},
     Login {
+        #[debug(skip)]
         account_id: AccountId,
         validate: bool,
     },
     Logout {},
     Ping {},
     RefreshExitList {
+        #[serde_as(as = "serde_with::DurationMilliSeconds")]
+        freshness: Duration,
+    },
+    // Ombra patch P2: apply the OS network config again while connecting or connected, without a reconnect.
+    RefreshOsNetworkConfig {},
+    // Ombra patch P2.
+    RefreshRelayList {
         #[serde_as(as = "serde_with::DurationMilliSeconds")]
         freshness: Duration,
     },
@@ -203,7 +223,8 @@ pub enum ManagerCmd {
         host: Option<String>,
     },
     SetTunnelArgs {
-        args: Option<TunnelArgs>,
+        /// Fields that are missing keep the stored value (`TunnelArgsUpdate`).
+        args: Option<TunnelArgsUpdate>,
         active: Option<bool>,
     },
     SetUseSystemDns {
@@ -217,6 +238,10 @@ pub enum ManagerCmd {
     },
     SetWireGuardBypass {
         enable: bool,
+    },
+    // Ombra patch P14.
+    SetWgKeyMaxAge {
+        secs: u64,
     },
 }
 
@@ -238,6 +263,7 @@ pub enum ManagerCmdOk {
     Empty,
     GetDebugInfo(DebugInfo),
     GetExitList(CachedValue<Arc<ExitList>>),
+    GetRelayList(CachedValue<Arc<Vec<OneRelay>>>),
     GetStatus(Status),
     GetTrafficStats(ManagerTrafficStats),
 }
@@ -256,6 +282,11 @@ where
     result.map(Into::into).map_err(|err| (&err).into())
 }
 
+/// A JSON decode error without the input values that serde quotes in its messages, such as an account number.
+pub fn redacted_json_error(error: &serde_json::Error) -> String {
+    format!("{:?} error at line {} column {}", error.classify(), error.line(), error.column())
+}
+
 impl ManagerCmd {
     pub fn from_json(json_cmd: &[u8]) -> Result<Self, ManagerCmdErrorCode> {
         // apple frameworks log IPC message SHA1
@@ -263,11 +294,10 @@ impl ManagerCmd {
 
         let cmd: ManagerCmd = serde_json::from_slice(json_cmd).map_err(|error| {
             tracing::error!(
-                ?error,
-                cmd =? String::from_utf8_lossy(json_cmd),
+                error = redacted_json_error(&error),
                 hash =? hash,
                 message_id = "ahsh9Aec",
-                "could not decode json command: {error}",
+                "could not decode json command",
             );
             ManagerCmdErrorCode::Other
         })?;
@@ -292,6 +322,7 @@ impl ManagerCmd {
             }
             Self::ApiGoogleBillingDetails { promo_code } => map_result(manager.google_billing_details(promo_code).await),
             Self::ApiServiceStatus {} => map_result(manager.get_service_status().await),
+            Self::ApiUseReferralCode { code } => map_result(manager.use_referral_code(code).await),
             Self::SetFeatureFlag { flag, active } => manager.run_on_client_state(|c| c.set_feature_flag(&flag, active)),
             Self::CreateDebugBundle { user_feedback, bundle_info, android_cache_dir } => manager
                 .create_debug_bundle(user_feedback, bundle_info, android_cache_dir)
@@ -313,6 +344,7 @@ impl ManagerCmd {
                 .map_err(|()| ManagerCmdErrorCode::Other),
             Self::GetDebugInfo {} => Ok(ManagerCmdOk::GetDebugInfo(manager.get_debug_info().await)),
             Self::GetExitList { known_version } => manager.get_exit_list(known_version).await.map(ManagerCmdOk::GetExitList),
+            Self::GetRelayList { known_version } => manager.get_relay_list(known_version).await.map(ManagerCmdOk::GetRelayList),
             Self::GetStatus { known_version } => manager
                 .subscribe()
                 .wait_for(|s| Some(s.version) != known_version)
@@ -337,6 +369,8 @@ impl ManagerCmd {
             Self::Logout {} => map_result(manager.logout()),
             Self::Ping {} => Ok(ManagerCmdOk::Empty),
             Self::RefreshExitList { freshness } => map_result(manager.maybe_update_exits(freshness).await),
+            Self::RefreshOsNetworkConfig {} => manager.run_on_client_state(ClientStateHandle::refresh_os_network_config),
+            Self::RefreshRelayList { freshness } => map_result(manager.maybe_update_relays(freshness).await),
             Self::RotateWgKey {} => manager.run_on_client_state(ClientStateHandle::rotate_wg_key),
             Self::SetAutoConnect { enable } => manager.run_on_client_state(|c| c.set_auto_connect(enable)),
             Self::SetApiHostAlternate { host } => manager.run_on_client_state(|c| c.set_api_host_alternate(host)),
@@ -345,11 +379,67 @@ impl ManagerCmd {
             Self::SetInNewAccountFlow { value } => manager.run_on_client_state(|c| c.set_in_new_account_flow(value)),
             Self::SetPinnedExits { exits } => manager.run_on_client_state(|c| c.set_pinned_exits(exits)),
             Self::SetSniRelay { host } => manager.run_on_client_state(|c| c.set_sni_relay(host)),
-            Self::SetTunnelArgs { args, active } => manager.run_on_client_state(|c| c.set_tunnel_target_state(args, active)),
+            Self::SetWgKeyMaxAge { secs } => manager.run_on_client_state(|c| c.set_wg_key_max_age(secs)),
+            Self::SetTunnelArgs { args, active } => manager.run_on_client_state(|c| {
+                let args = args.map(|update| update.apply_to(&c.borrow().config().tunnel_args));
+                c.set_tunnel_target_state(args, active)
+            }),
             Self::SetUseSystemDns { enable } => manager.run_on_client_state(|c| c.set_use_system_dns(enable)),
             Self::SetLocalNetworkAccess { enable } => manager.run_on_client_state(|c| c.set_local_network_access(enable)),
             Self::SetTailscaleBypass { enable } => manager.run_on_client_state(|c| c.set_tailscale_bypass(enable)),
             Self::SetWireGuardBypass { enable } => manager.run_on_client_state(|c| c.set_wireguard_bypass(enable)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn decode(json: serde_json::Value) -> ManagerCmd {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn ombra_commands_from_kotlin() {
+        // The shapes of app/src/test/java/app/ombra/core/model/CoreModelTest.kt.
+        assert!(matches!(
+            decode(json!({"getRelayList": {"knownVersion": null}})),
+            ManagerCmd::GetRelayList { known_version: None }
+        ));
+        assert!(matches!(
+            decode(json!({"getRelayList": {"knownVersion": "AAEC"}})),
+            ManagerCmd::GetRelayList { known_version: Some(version) } if version == [0, 1, 2]
+        ));
+        assert!(matches!(
+            decode(json!({"refreshRelayList": {"freshness": 60000}})),
+            ManagerCmd::RefreshRelayList { freshness } if freshness == Duration::from_secs(60)
+        ));
+        assert!(matches!(
+            decode(json!({"refreshOsNetworkConfig": {}})),
+            ManagerCmd::RefreshOsNetworkConfig {}
+        ));
+        // Setters answer `null`.
+        assert_eq!(serde_json::to_string(&ManagerCmdOk::Empty).unwrap(), "null");
+    }
+
+    #[test]
+    fn command_logs_have_no_secrets() {
+        let commands = [
+            json!({"login": {"accountId": "12345678901234567890", "validate": true}}),
+            json!({"apiGoogleAssociateAccount": {"purchaseToken": "12345-token", "promoCode": null}}),
+            json!({"apiAppleAssociateAccount": {"appTransactionJws": "12345-jws"}}),
+        ];
+        for command in commands {
+            let debug = format!("{:?}", decode(command));
+            assert!(!debug.contains("123"), "{debug}");
+        }
+
+        let error = serde_json::from_str::<ManagerCmd>(r#"{"login":{"accountId":1234567890123456789,"validate":true}}"#).unwrap_err();
+        assert!(error.to_string().contains("1234567890123456789"), "serde quotes the value: {error}");
+        let redacted = redacted_json_error(&error);
+        assert!(!redacted.contains("123456789"), "{redacted}");
+        assert!(redacted.starts_with("Data error at line 1 column"), "{redacted}");
     }
 }

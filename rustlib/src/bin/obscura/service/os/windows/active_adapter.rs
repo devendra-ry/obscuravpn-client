@@ -117,6 +117,8 @@ fn get_active_adapter(tun_luid: u64) -> Result<Option<NetworkInterface>, ()> {
     Ok(Some(NetworkInterface {
         name: adapter.friendly_name.clone(),
         index,
+        network_handle: 0,
+        mtu_hint: None,
         ip: IpAddr::V4(ip),
         mtu,
     }))
@@ -173,6 +175,7 @@ mod tests {
             ipv4_metric,
             ipv4_address: Some(Ipv4Addr::new(10, 0, 0, 2)),
             gateways: if gateway { vec![Ipv4Addr::new(10, 0, 0, 1).into()] } else { Vec::new() },
+            dhcp_enabled: true,
         }
     }
 

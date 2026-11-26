@@ -22,7 +22,7 @@ use super::ipc::run_command;
 use super::status::{LinuxServiceDegradation, NEVPNStatus, OsStatus, ServiceStatus};
 use super::status_watch::GuiStatusWatch;
 use crate::exit_selection::ExitSelector;
-use crate::manager::{TunnelArgs, VpnStatus};
+use crate::manager::{TunnelArgsUpdate, VpnStatus};
 use crate::manager_cmd::ManagerCmd;
 
 pub enum ShowTarget {
@@ -179,7 +179,10 @@ impl TrayState {
                 label: "Quick Connect".to_owned(),
                 checked: quick_connect_checked,
                 activate: Box::new(|this: &mut Self| {
-                    this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs { args: Some(TunnelArgs { exit: ExitSelector::Any {} }), active: Some(true) })
+                    this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs {
+                        args: Some(TunnelArgsUpdate::exit_only(ExitSelector::Any {})),
+                        active: Some(true),
+                    })
                 }),
                 ..Default::default()
             }
@@ -208,7 +211,10 @@ impl TrayState {
                     label: format!("{city_name}, {}", pinned.country_code.to_uppercase()),
                     checked,
                     activate: Box::new(move |this: &mut Self| {
-                        this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs { args: Some(TunnelArgs { exit: selector.clone() }), active: Some(true) })
+                        this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs {
+                            args: Some(TunnelArgsUpdate::exit_only(selector.clone())),
+                            active: Some(true),
+                        })
                     }),
                     ..Default::default()
                 }
@@ -238,7 +244,10 @@ impl TrayState {
                     label: format!("{city_name}, {}", city_code.country_code.0.to_uppercase()),
                     checked: true,
                     activate: Box::new(move |this: &mut Self| {
-                        this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs { args: Some(TunnelArgs { exit: selector.clone() }), active: Some(true) })
+                        this.spawn_manager_cmd(ManagerCmd::SetTunnelArgs {
+                            args: Some(TunnelArgsUpdate::exit_only(selector.clone())),
+                            active: Some(true),
+                        })
                     }),
                     ..Default::default()
                 }

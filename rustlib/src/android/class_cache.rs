@@ -4,6 +4,12 @@ use jni::{
 };
 use std::sync::Arc;
 
+// Contract with the Kotlin side (android/app/src/main/java/net/obscura/vpnclientapp/). R8 must keep these classes
+// and the members that Rust uses. The JNI export names in `ffi.rs` follow the same package.
+const FFI_HANDLE_CLASS: &str = "net/obscura/vpnclientapp/client/ObscuraLibrary$FfiHandle";
+const ERROR_CODE_EXCEPTION_CLASS: &str = "net/obscura/vpnclientapp/client/ErrorCodeException";
+const VPN_SERVICE_CLASS: &str = "net/obscura/vpnclientapp/services/ObscuraVpnService";
+
 #[derive(Debug)]
 pub struct ClassCache {
     ffi_handle: GlobalRef,
@@ -16,11 +22,11 @@ impl ClassCache {
     /// Must be called on a Java thread.
     /// https://developer.android.com/ndk/guides/jni-tips#faq:-why-didnt-findclass-find-my-class
     pub fn new(env: &mut JNIEnv) -> anyhow::Result<Arc<Self>> {
-        let ffi_handle = env.find_class("net/obscura/vpnclientapp/client/ObscuraLibrary$FfiHandle")?;
+        let ffi_handle = env.find_class(FFI_HANDLE_CLASS)?;
         let ffi_handle = env.new_global_ref(ffi_handle)?;
-        let error_code_exception = env.find_class("net/obscura/vpnclientapp/client/ErrorCodeException")?;
+        let error_code_exception = env.find_class(ERROR_CODE_EXCEPTION_CLASS)?;
         let error_code_exception = env.new_global_ref(error_code_exception)?;
-        let vpn_service = env.find_class("net/obscura/vpnclientapp/services/ObscuraVpnService")?;
+        let vpn_service = env.find_class(VPN_SERVICE_CLASS)?;
         let vpn_service = env.new_global_ref(vpn_service)?;
         Ok(Arc::new(Self { ffi_handle, error_code_exception, vpn_service }))
     }
@@ -33,6 +39,8 @@ impl ClassCache {
         self.error_code_exception.as_obj().into()
     }
 
+    /// Static Rust -> Java callbacks on `ObscuraVpnService`:
+    /// `ffiSetNetworkConfig`, `ffiGetProcessExitReasons`, `ffiStoreWgSecretKey`.
     pub fn vpn_service(&self) -> &JClass<'static> {
         self.vpn_service.as_obj().into()
     }

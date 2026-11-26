@@ -2,8 +2,13 @@
 pub mod rate_limited_log;
 
 pub mod backoff;
+// A copy of quinn's code: it keeps quinn's `as` conversions.
+#[allow(clippy::as_conversions)]
+mod bbr;
+mod bytes_arena;
 pub mod client_state;
 pub mod config;
+mod datagram_coalescer;
 pub mod errors;
 pub mod exit_selection;
 pub mod ffi_helpers;
@@ -12,11 +17,13 @@ pub mod manager;
 pub mod manager_cmd;
 pub mod net;
 pub mod network_config;
+pub mod quic_tuning;
 pub mod quicwg;
 pub mod relay_selection;
 mod serde_safe;
 pub mod tokio;
 pub mod tunnel_state;
+pub mod udp_tunnel;
 pub mod ui_config;
 pub mod version;
 pub mod wg_key_store;
@@ -32,6 +39,7 @@ mod cached_value;
 mod constants;
 pub mod debug_bundle;
 mod dns;
+mod handover;
 #[cfg(target_os = "linux")]
 pub mod linux;
 mod liveness;
@@ -39,5 +47,7 @@ pub mod local_network;
 pub mod logging;
 pub mod os;
 pub mod positive_u31;
+#[cfg(test)]
+mod test_relay;
 mod wake_instant;
 mod wg_control_message_header;

@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_NO_DATA, WIN32_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
     GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, GetIfEntry2, IP_ADAPTER_ADDRESSES_LH,
-    MIB_IF_ROW2,
+    IP_ADAPTER_DHCP_ENABLED, MIB_IF_ROW2,
 };
 use windows::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6, SOCKET_ADDRESS};
@@ -32,6 +32,8 @@ pub struct NetworkAdapter {
     /// First IPv4 unicast address
     pub ipv4_address: Option<Ipv4Addr>,
     pub gateways: Vec<IpAddr>,
+    /// `IP_ADAPTER_DHCP_ENABLED`: DHCP is on for IPv4.
+    pub dhcp_enabled: bool,
 }
 
 pub fn list_network_adapters() -> windows::core::Result<Vec<NetworkAdapter>> {
@@ -120,6 +122,8 @@ fn read_adapter(adapter: &IP_ADAPTER_ADDRESSES_LH) -> NetworkAdapter {
                 unsafe { socket_address_to_ip(&node.Address) }
             })
             .collect(),
+        // SAFETY: Both union members are plain integers, so every bit pattern is a valid read.
+        dhcp_enabled: unsafe { adapter.Anonymous2.Flags } & IP_ADAPTER_DHCP_ENABLED != 0,
     }
 }
 

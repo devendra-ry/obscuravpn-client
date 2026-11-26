@@ -1,0 +1,7 @@
+addFilter("no-manual-page-for-binary")
+addFilter("no-documentation")
+addFilter("unstripped-binary-or-object")
+addFilter("name-repeated-in-summary")
+addFilter("spelling-error")
+addFilter("non-conffile-in-etc.*RPM-GPG-KEY")
+addFilter("description-shorter-than-summary")

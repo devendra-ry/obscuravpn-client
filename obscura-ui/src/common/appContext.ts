@@ -1,0 +1,294 @@
+import { createContext, useContext } from 'react';
+import { ExitSelector, ExitSelectorCity, TunnelArgs } from '../bridge/commands';
+import { HAS_NE_VPN_STATUS } from '../bridge/SystemProvider';
+import { AccountId } from './accountUtils';
+import { AccountInfo, Exit, ServiceStatusOutput } from './api';
+
+export enum NEVPNStatus {
+    Invalid = 'invalid',
+    Disconnected = 'disconnected',
+    Connecting = 'connecting',
+    Connected = 'connected',
+    Reasserting = 'reasserting',
+    Disconnecting = 'disconnecting',
+}
+
+export interface LinuxVersionMismatch {
+    serviceVersion: string,
+    appVersion: string,
+    installedAppVersionDiffers: boolean | null,
+}
+export interface LinuxSocketPermissionDenied {
+    user: string | null,
+}
+export type LinuxServiceDegradation = 'unitInactive' | 'unitActivating' | 'unitNotInstalled' | 'unknown' | { socketPermissionDenied: LinuxSocketPermissionDenied } | { versionMismatch: LinuxVersionMismatch };
+export type WindowsServiceDegradation = 'stopped' | 'failed' | 'disabled' | 'notInstalled' | 'packageIdentityMissing' | 'other';
+export type ServiceStatus = 'initializing' | { healthy: AppStatus } | { degraded: { lastStatus: AppStatus | null, linuxDegradation?: LinuxServiceDegradation, windowsDegradation?: WindowsServiceDegradation } };
+
+export function latestAppStatus(serviceStatus: ServiceStatus | undefined): AppStatus | undefined {
+    if (serviceStatus === undefined || serviceStatus === 'initializing') return undefined;
+    if ('healthy' in serviceStatus) return serviceStatus.healthy;
+    return serviceStatus.degraded.lastStatus ?? undefined;
+}
+
+export function linuxDegradation(serviceStatus: ServiceStatus | undefined): LinuxServiceDegradation | undefined {
+    if (serviceStatus === undefined || serviceStatus === 'initializing' || 'healthy' in serviceStatus) return undefined;
+    return serviceStatus.degraded.linuxDegradation;
+}
+
+export function windowsDegradation(serviceStatus: ServiceStatus | undefined): WindowsServiceDegradation | undefined {
+    if (serviceStatus === undefined || serviceStatus === 'initializing' || 'healthy' in serviceStatus) return undefined;
+    return serviceStatus.degraded.windowsDegradation;
+}
+
+export enum UpdaterStatusType {
+    Uninitiated = 'uninitiated',
+    Initiated = 'initiated',
+    Available = 'available',
+    NotFound = 'notFound',
+    Error = 'error'
+}
+
+export interface AppcastSummary {
+    date: string;
+    description: string;
+    version: string;
+    minSystemVersionOk: boolean;
+}
+
+export interface UpdaterStatus {
+    type: UpdaterStatusType;
+    appcast?: AppcastSummary;
+    error?: string;
+    errorCode?: number;
+}
+
+export enum NavigationView {
+  Developer = "developer",
+  Connection = "connection",
+  Location = "location",
+  Account = "account",
+  Help = "help",
+  About = "about",
+  Settings = "settings",
+  Apps = "apps",
+}
+
+export type ColorScheme = 'light' | 'dark' | 'auto';
+
+export interface OsStatusShared {
+    version: string,
+    internetAvailable: boolean,
+    srcVersion: string
+    strictLeakPrevention: boolean,
+    debugBundleStatus: {
+      inProgress: boolean,
+      latestPath: string | null,
+      inProgressCounter: number,
+    },
+    canSendMail: boolean,
+    serviceStatus?: ServiceStatus,
+    loginItemStatus?: {
+      registered: boolean,
+      error?: string
+    },
+    navigationView?: NavigationView,
+    colorScheme: ColorScheme,
+    // macOS specific (other platforms should specify uninitiated)
+    updaterStatus: UpdaterStatus,
+    storeKit?: {
+      subscriptionProduct?: SubscriptionProductModel,
+      externalPaymentsAllowed: boolean,
+    },
+    offerCodeRedemptionSuccess?: boolean,
+    // Android-specific
+    playBilling?: boolean,
+    privateDnsActive?: boolean,
+}
+
+export interface OsStatusWVpnStatus extends OsStatusShared {
+  osVpnStatus: NEVPNStatus,
+}
+
+export type OsStatus = OsStatusShared | OsStatusWVpnStatus;
+
+export interface SubscriptionProductModel {
+  displayName: string,
+  description: string,
+  displayPrice: string,
+  renewalPrice?: string,
+  subscriptionPeriodFormatted: string,
+}
+
+export enum TransportKind {
+    Quic = 'quic',
+    TcpTls = 'tcpTls',
+}
+
+export interface VpnStatus {
+    connected?: {
+      exit: Exit,
+      clientPublicKey: string,
+      exitPublicKey: string,
+      transport: TransportKind,
+      tunnelArgs: TunnelArgs,
+    },
+    connecting?: {
+      connectError: string | null,
+      reconnecting: boolean
+      tunnelArgs: TunnelArgs,
+    },
+    disconnected?: {}
+}
+
+export function getCityFromStatus(status: VpnStatus): ExitSelectorCity | undefined {
+  const tunnelArgs = getTunnelArgs(status);
+  return getCityFromArgs(tunnelArgs?.exit);
+}
+
+export function getCityFromArgs(exitSelector: ExitSelector | undefined): ExitSelectorCity | undefined {
+  return exitSelector !== undefined && "city" in exitSelector ? exitSelector.city : undefined;
+}
+
+export function getTunnelArgs(status: VpnStatus): TunnelArgs | undefined {
+  return status.connected?.tunnelArgs ?? status.connecting?.tunnelArgs;
+}
+
+export interface PinnedLocation {
+    country_code: string,
+    city_code: string,
+
+    // Seconds since UNIX epoch.
+    pinned_at: number,
+}
+
+export interface AccountStatus {
+    account_info: AccountInfo,
+    last_updated_sec: number
+}
+
+// See rustlib/src/config/feature_flags.rs
+export enum KnownFeatureFlagKey {
+  QuicFramePadding = "quicFramePadding",
+  KillSwitch = "killSwitch",
+  ForceSmallMtu = "forceSmallMtu",
+  TcpTlsTunnel = "tcpTlsTunnel",
+}
+
+export type FeatureFlagKey = KnownFeatureFlagKey | string;
+
+export type FeatureFlagValue = boolean | null;
+
+export function featureFlagEnabled(value: FeatureFlagValue | undefined): boolean {
+  return value === true;
+}
+
+export interface DNSContentBlock {
+    ad: boolean,
+    tracker: boolean,
+    malware: boolean,
+    adult: boolean,
+    gambling: boolean,
+    socialMedia: boolean,
+}
+
+export interface AppStatus {
+    version: string,
+    dnsContentBlock: DNSContentBlock,
+    vpnStatus: VpnStatus,
+    accountId: AccountId,
+    pinnedLocations: Array<PinnedLocation>,
+    lastChosenExit: ExitSelector,
+    inNewAccountFlow: boolean,
+    apiUrl: string,
+    account: AccountStatus | null,
+    autoConnect: boolean,
+    featureFlags: Record<FeatureFlagKey, FeatureFlagValue>,
+    featureFlagKeys: FeatureFlagKey[],
+    useSystemDns: boolean,
+    localNetworkAccess: boolean,
+    tailscaleBypass: boolean,
+    wireguardBypass: boolean,
+}
+
+interface IAppContext {
+    vpnConnected: boolean,
+    // the exitSelector used to initiate the connection
+    initiatingExitSelector?: ExitSelector,
+    vpnConnect: (exit: ExitSelector) => Promise<void>,
+    vpnDisconnect: () => Promise<void>,
+    pollAccount: () => Promise<void>,
+    accountLoading: boolean,
+    appStatus: AppStatus,
+    osStatus: OsStatusWVpnStatus,
+    showOfflineUI: boolean,
+    accountInfo: AccountInfo | null,
+    apiServiceStatus: ServiceStatusOutput | null,
+    connectionInProgress: ConnectionInProgress,
+    isProcessingPayment: boolean,
+    setPaymentProcessing: (value: boolean) => void
+}
+
+export const AppContext = createContext(null as any as IAppContext);
+
+export enum ConnectionInProgress {
+    Connecting = 'Connecting',
+    Reconnecting = 'Reconnecting',
+    Disconnecting = 'Disconnecting',
+    // UI exclusives:
+    ChangingLocations = 'Changing Locations',
+    UNSET = 'UNSET'
+}
+
+/**
+ * State derived isConnecting hook
+ */
+export function useIsConnecting() {
+  const { connectionInProgress, osStatus, appStatus } = useContext(AppContext);
+  return osStatus.osVpnStatus === NEVPNStatus.Connecting
+    || osStatus.osVpnStatus === NEVPNStatus.Reasserting
+    || connectionInProgress === ConnectionInProgress.ChangingLocations
+    || appStatus.vpnStatus.connecting !== undefined;
+}
+
+export function useIsTransitioning() {
+  const { connectionInProgress, osStatus, appStatus } = useContext(AppContext);
+  return osStatus.osVpnStatus === NEVPNStatus.Connecting
+    || osStatus.osVpnStatus === NEVPNStatus.Reasserting
+    || osStatus.osVpnStatus === NEVPNStatus.Disconnecting
+    || connectionInProgress === ConnectionInProgress.ChangingLocations
+    || appStatus.vpnStatus.connecting !== undefined;
+}
+
+export function isConnecting(connectionInProgress: ConnectionInProgress) {
+    switch (connectionInProgress) {
+        case ConnectionInProgress.Connecting:
+        case ConnectionInProgress.Reconnecting:
+        case ConnectionInProgress.ChangingLocations:
+            return true;
+    }
+    return false;
+}
+
+export function connectionIsIdle(connectionInProgress: ConnectionInProgress, vpnStatus: VpnStatus, osVpnStatus: NEVPNStatus) {
+  return connectionInProgress === ConnectionInProgress.UNSET
+    && vpnStatus.disconnected !== undefined
+    && (
+      osVpnStatus === NEVPNStatus.Disconnected ||
+      osVpnStatus === NEVPNStatus.Invalid
+    );
+}
+
+export function getEffectiveOsStatus(osStatus: OsStatus, appStatus?: AppStatus | null): NEVPNStatus {
+  if (HAS_NE_VPN_STATUS) return (osStatus as OsStatusWVpnStatus).osVpnStatus;
+  return appStatus ? vpnStatusToNEVPNStatus(appStatus.vpnStatus) : NEVPNStatus.Disconnected;
+}
+
+export function vpnStatusToNEVPNStatus(vpnStatus: VpnStatus): NEVPNStatus {
+  if (!vpnStatus) return NEVPNStatus.Disconnected;
+  if (vpnStatus.connected !== undefined) return NEVPNStatus.Connected;
+  if (vpnStatus.connecting !== undefined) {
+    return vpnStatus.connecting.reconnecting ? NEVPNStatus.Reasserting : NEVPNStatus.Connecting;
+  }
+  return NEVPNStatus.Disconnected;
+}

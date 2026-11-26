@@ -1,0 +1,84 @@
+.locationCardConnected, .locationCardNotConnected {
+    cursor: pointer;
+    border: 1px solid transparent;
+}
+
+@media (hover: hover) {
+    .locationCardNotConnected:hover:not(:has(.favoriteBtn:hover)) {
+        background-color: light-dark(#f5f5f5, var(--mantine-color-dark-4));
+
+        @mixin light {
+            border-color: var(--mantine-color-teal-5) !important;
+            border-width: 1px !important;
+        }
+    }
+}
+
+.locationCardNotConnected:active:not(:has(.favoriteBtn:active)) {
+    transform: translateY(2px);
+}
+
+.locationCardConnected {
+    border-color: var(--mantine-primary-color-filled) !important;
+    border-width: 2px !important;
+}
+
+.locationCardConnected, .locationCardDisabled, .connectingAnimation {
+    cursor: not-allowed;
+}
+
+
+.item {
+    &[data-active] {
+        z-index: 1;
+        background-color: var(--mantine-color-body);
+        border-color: light-dark(var(--mantine-color-gray-2), var(--mantine-color-dark-4));
+        box-shadow: var(--mantine-shadow-md);
+        border-radius: var(--mantine-radius-md);
+    }
+}
+
+.container {
+    padding: 20px 75px;
+}
+
+@media screen and (max-width: $mantine-breakpoint-xs) {
+    .container {
+        padding-top: 20px;
+        padding-bottom: 70px;
+        padding-left: 20px;
+        padding-right: 20px;
+    }
+
+    .serverInfoText {
+        display: none !important;
+    }
+}
+
+@media screen and (min-width: $mantine-breakpoint-xs) {
+    .currentSession {
+        flex-direction: column;
+    }
+}
+
+.connectingAnimation {
+    border: 2px solid transparent !important;
+    border-radius: var(--mantine-radius-md) !important;
+    animation: wave 2s linear infinite;
+    background-size: 200% 50% !important;
+    @mixin light {
+        background: linear-gradient(90deg, rgba(246, 152, 85, 0.487), #FFFFFFFF, rgba(246, 152, 85, 0.487));
+    }
+    @mixin dark {
+        background: linear-gradient(90deg, rgba(181, 75, 0, 0.75), #00000000, rgba(181, 75, 0, 0.75));
+    }
+}
+
+@keyframes wave {
+    0% {
+        background-position: 200% 50%;
+    }
+    100% {
+        background-position: 0% 50%;
+    }
+}

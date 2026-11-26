@@ -1,0 +1,120 @@
+// boilerplate components
+// core styles are required for all packages
+import '@mantine/core/styles.css';
+import '@mantine/notifications/styles.css';
+// other css files are required only if
+// you are using components from the corresponding package
+// import '@mantine/dates/styles.css';
+// import '@mantine/dropzone/styles.css';
+// import '@mantine/code-highlight/styles.css';
+import { ColorSchemeScript, MantineProvider, createTheme } from '@mantine/core';
+import { ModalsProvider } from '@mantine/modals';
+import { Notifications } from '@mantine/notifications';
+import { PropsWithChildren } from 'react';
+import { IS_HANDHELD_DEVICE } from '../bridge/SystemProvider';
+import CachedColorScheme from './CachedColorScheme';
+import classes from './Mantine.module.css';
+
+export default function Mantine({ children }: PropsWithChildren) {
+    // override theme for Mantine (default props and styles)
+    // https://mantine.dev/theming/mantine-provider/
+    const theme = createTheme({
+        fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI Variable Text, Segoe UI, Roboto, Helvetica, Arial, sans-serif, Apple Color Emoji, Segoe UI Emoji',
+        fontFamilyMonospace: 'source-code-pro, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, Courier New, monospace',
+        // for each component's mantine docs, "Styles API" contains the inner elements that are available to style
+        components: {
+            Checkbox: { styles: { input: { cursor: 'pointer' }, label: { cursor: 'pointer' } } },
+            TextInput: { styles: { label: { marginTop: '0.5rem' } } },
+            Select: { styles: { label: { marginTop: '0.5rem' } } },
+            Loader: { defaultProps: { size: 'xl' } },
+            Space: { defaultProps: { h: 'sm' } },
+            Anchor: { defaultProps: { target: '_blank' } },
+            Burger: { styles: { burger: { color: '--mantine-color-grey-6' } } },
+            CopyButton: { defaultProps: { timeout: 1100 } },
+            Switch: {
+                defaultProps: { labelPosition: 'left', size: IS_HANDHELD_DEVICE ? 'lg' : undefined },
+                styles: { body: { justifyContent: 'space-between' }, description: { fontSize: 'var(--mantine-font-size-sm)' } },
+                classNames: { track: classes.switchTrack },
+            },
+            Alert: {
+              styles: {
+                message: { fontSize: 'var(--mantine-font-size-xs)' },
+                root: { padding: IS_HANDHELD_DEVICE ? undefined : 'var(--mantine-spacing-xs)' },
+                icon: {
+                  width: IS_HANDHELD_DEVICE ? '1.5rem' : undefined,
+                  height: IS_HANDHELD_DEVICE ? '1.5rem' : undefined,
+                  marginRight: 'var(--mantine-spacing-xs)',
+                }
+              }
+            },
+            Button: {
+                defaultProps: {
+                    radius: 'md',
+                    variant: 'gradient',
+                    size: IS_HANDHELD_DEVICE ? 'md' : undefined,
+                },
+            },
+            Modal: {
+              defaultProps: {
+                radius: 'md'
+              },
+              styles: {
+                content: {
+                  // By default, the height isn't constrained by the inner padding or content margin.
+                  maxHeight: 'calc(100% - var(--safe-area-inset-top, env(safe-area-inset-top)) - var(--safe-area-inset-bottom, env(safe-area-inset-bottom)))',
+                  // The margin is still necessary for keeping the top/bottom spacing proportional.
+                  marginTop: 'var(--safe-area-inset-top, env(safe-area-inset-top))',
+                  marginBottom: 'var(--safe-area-inset-bottom, env(safe-area-inset-bottom))',
+                },
+                // This applies to the container used for centering, and *not* the overlay.
+                inner: {
+                  paddingLeft: 'calc(var(--modal-x-offset) + var(--safe-area-inset-left, env(safe-area-inset-left)))',
+                  paddingRight: 'calc(var(--modal-x-offset) + var(--safe-area-inset-right, env(safe-area-inset-right)))',
+                }
+              }
+            },
+            Notifications: {
+              styles: {
+                root: {
+                  marginBottom: 'var(--safe-area-inset-bottom, env(safe-area-inset-bottom))',
+                  marginRight: 'var(--safe-area-inset-right, env(safe-area-inset-right))',
+                }
+              }  
+            },
+            Accordion: {
+              defaultProps: {
+                radius: 'md'
+              },
+              styles: {
+                item: { transition: 'none' },
+                control: { transition: 'none' },
+                panel: { transition: 'none' }
+              }
+            }
+        },
+        primaryColor: 'orange',
+        // see figma design for buttons
+        defaultGradient: { from: '#FF7A49', to: '#FF6025', deg: 180 },
+        // Mantine v7 has ugly dark colors. Therefore, use colors from v6 (https://v6.mantine.dev/theming/colors/#default-colors)
+        colors: {
+            // dark.4 is the borderColor for dark appearance
+            dark: ['#C1C2C5', '#A6A7AB', '#909296', '#5c5f66', '#4F5156', '#393939', '#353535', '#313131', '#303030', '#222528'],
+        },
+        other: {
+            dimmed: 'var(--mantine-color-dimmed)',
+            buttonDisconnectProps: { variant: 'light', c: 'red.7', bg: 'red.1' },
+        }
+    });
+
+    return <>
+        <ColorSchemeScript defaultColorScheme='auto' />
+        <MantineProvider defaultColorScheme='auto' theme={theme}>
+            <ModalsProvider>
+                <Notifications />
+                <CachedColorScheme>
+                  {children}
+                </CachedColorScheme>
+            </ModalsProvider>
+        </MantineProvider>
+    </>
+}

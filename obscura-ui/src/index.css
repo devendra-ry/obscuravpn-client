@@ -1,0 +1,45 @@
+body {
+  /* show eye pleasing background color instead of white when app has not rendered */
+  background-color: #313131;
+  margin: 0;
+  /* disable text interaction by default */
+  -webkit-user-select: none; /* Safari */
+  user-select: none; /* Standard  */
+  cursor: default;
+  height: 100%;
+}
+
+html, #root {
+    height: 100%;
+}
+
+/* always show scrollbar thumb */
+::-webkit-scrollbar {
+    -webkit-appearance: none;
+    width: 7px;
+}
+
+::-webkit-scrollbar-thumb {
+    border-radius: 4px;
+}
+
+.row {
+  display: flex;
+  align-items: flex-end;
+  & > div {
+    flex-grow: 1;
+  }
+}
+
+.rowCenter {
+  display: flex;
+  align-items: center;
+  & > div {
+    flex-grow: 1;
+  }
+}
+
+.embeddedInput {
+  display: inline-block;
+  margin: auto 5px;
+}

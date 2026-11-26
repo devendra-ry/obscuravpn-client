@@ -1,0 +1,18 @@
+.container {
+    padding: 20px 60px;
+    gap: var(--mantine-spacing-xl) !important;
+}
+
+.accountStatusCardBox {
+    flex-basis: 0;
+}
+
+@media screen and (max-width: $mantine-breakpoint-xs) {
+    .container {
+        padding-top: 20px;
+        padding-bottom: 0px;
+        padding-left: 20px;
+        padding-right: 20px;
+        gap: var(--mantine-spacing-md) !important;
+    }
+}

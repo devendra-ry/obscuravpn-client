@@ -1,0 +1,647 @@
+{
+  inputs = {
+    crane.url = "github:ipetkov/crane";
+    flake-utils.url = "github:numtide/flake-utils";
+    nixpkgs.url = "nixpkgs/nixos-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+  };
+
+  outputs =
+    {
+      crane,
+      flake-utils,
+      nixpkgs,
+      rust-overlay,
+      self,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        overlays = [ (import rust-overlay) ];
+        pkgs = import nixpkgs {
+          inherit overlays system;
+
+          config = {
+            allowUnfree = true; # sadly, for Android
+            android_sdk.accept_license = true;
+          };
+        };
+
+        lib = pkgs.lib;
+
+        evaluatedSource = lib.fileset.toSource {
+          root = ./.;
+          fileset = lib.fileset.difference ./. ./tag.json;
+        };
+
+        # Extract the hash from the store path.
+        sourceHash = builtins.substring 0 32 (baseNameOf evaluatedSource);
+
+        tag = builtins.fromJSON (builtins.readFile ./tag.json);
+        commitShort = self.shortRev or self.dirtyShortRev;
+
+        # Note: We need to check `self.rev` to ensure that a modification of `tag.json` doesn't get marked as clean. Otherwise only the hash matters.
+        isCleanBuild = self ? rev && tag.sourceHash == sourceHash;
+        version = if isCleanBuild then "v${tag.version}" else "v${tag.version}.1-${commitShort}";
+
+        hash = pkgs.writeText "obscura-source-hash.txt" sourceHash;
+
+        androidBuildToolsVersion = "37.0.0";
+        androidCmakeVersion = "3.31.6";
+        android = pkgs.androidenv.composeAndroidPackages {
+          toolsVersion = "26.1.1"; # frozen legacy version
+          platformToolsVersion = "37.0.1";
+
+          platformVersions = [ "36" ];
+          buildToolsVersions = [ androidBuildToolsVersion ];
+
+          includeEmulator = false;
+          includeSources = false;
+
+          cmakeVersions = [ androidCmakeVersion ];
+
+          includeNDK = true;
+          ndkVersion = "26.3.11579264";
+
+          useGoogleAPIs = true;
+          useGoogleTVAddOns = false;
+
+          includeExtras = [ "extras;google;google_play_services" ];
+        };
+        androidBuildTools = "${android.androidsdk}/libexec/android-sdk/build-tools/${androidBuildToolsVersion}";
+        androidGradleEnv = {
+          ANDROID_HOME = "${android.androidsdk}/libexec/android-sdk";
+          OBSCURA_VERSION = version;
+        };
+        androidRustEnv = {
+          ANDROID_NDK_ROOT = "${android.ndk-bundle}/libexec/android-sdk/ndk-bundle";
+        };
+
+        gradleOpts = [ "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidBuildTools}/aapt2" ];
+        gradleFlags = gradleOpts ++ [
+          "-Pobscura.unsigned=true"
+          "-xlint" # Prevents dependency on group-index and SNAPSHOT files: https://github.com/NixOS/nixpkgs/issues/501643
+        ];
+
+        rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rustlib/rust-toolchain.toml;
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+
+        rustDepsArgs = {
+          src = ./rustlib;
+
+          strictDeps = true;
+          nativeBuildInputs = [
+            pkgs.cmake
+            pkgs.pkg-config
+          ];
+        };
+        rustDepsArgsNative = rustDepsArgs // {
+          buildInputs = lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.tpm2-tss ];
+        };
+        rustDepsArgsNative-gui = rustDepsArgsNative // {
+          cargoExtraArgs = "--locked --bin obscura-gui --features=gui";
+          buildInputs = rustDepsArgsNative.buildInputs ++ [
+            pkgs.glib
+            pkgs.gtk4
+            pkgs.libadwaita
+            pkgs.webkitgtk_6_0
+          ];
+        };
+        rustDepsArgs-android =
+          rustDepsArgs
+          // androidRustEnv
+          // {
+            buildInputs = [ android.androidsdk ];
+            nativeBuildInputs = rustDepsArgs.nativeBuildInputs ++ [ pkgs.cargo-ndk ];
+            CARGO_BUILD_TARGET = "aarch64-linux-android";
+            doCheck = false;
+
+            # TODO: Long-term it is probably better to just configure the environment ourselves using nixpkgs's standard cross-compilation framework. Right now this is a weird state where we are "secretly" cross-compiling.
+            cargoBuildCommand = "cargo ndk -t arm64-v8a build --release --lib";
+            cargoCheckCommand = "cargo ndk -t arm64-v8a check --release --lib";
+          };
+        rustArgs = rustDepsArgsNative // {
+          cargoArtifacts = craneLib.buildDepsOnly rustDepsArgsNative;
+        };
+        rustArgs-android = rustDepsArgs-android // {
+          cargoArtifacts = craneLib.buildDepsOnly rustDepsArgs-android;
+          # HACK: cargo-ndk swallows cargo's JSON messages, so crane can't find the lib. Copy manually.
+          doNotPostBuildInstallCargoBinaries = true;
+          installPhaseCommand = ''
+            install -D -t "$out/lib" target/aarch64-linux-android/release/libobscuravpn_client.so
+            "$ANDROID_NDK_ROOT"/toolchains/llvm/prebuilt/*/bin/llvm-strip "$out/lib/libobscuravpn_client.so"
+          '';
+        };
+        rustArgsNative-gui = rustDepsArgsNative-gui // {
+          cargoArtifacts = craneLib.buildDepsOnly rustDepsArgsNative-gui;
+        };
+
+        rustLibArgs = {
+          # Environment variables for cbindgen, see rustlib/build.rs
+          outputs = [
+            "out"
+            "dev"
+          ]; # Assumes that crane's derivation only has "out"
+          OBSCURA_CLIENT_RUSTLIB_CBINDGEN_CONFIG_PATH = ./apple/cbindgen-apple.toml;
+          OBSCURA_CLIENT_RUSTLIB_CBINDGEN_OUTPUT_HEADER_PATH = "${placeholder "dev"}/include/libobscuravpn_client.h";
+          OBSCURA_VERSION = version;
+        };
+
+        rust = craneLib.buildPackage (rustArgs // rustLibArgs);
+        rust-android = craneLib.buildPackage (rustArgs-android // rustLibArgs);
+        rust-cli-bin = craneLib.buildPackage (
+          rustArgs
+          // {
+            cargoExtraArgs = "--locked --bin obscura";
+            meta.mainProgram = "obscura";
+          }
+        );
+        gui-gresources = pkgs.stdenv.mkDerivation {
+          name = "gui-gresources";
+          src = lib.fileset.toSource {
+            root = ./rustlib;
+            fileset = lib.fileset.unions [
+              ./rustlib/gen-gresource-xml.py
+              ./rustlib/src/gui/icons.gresource.xml
+              ./rustlib/src/gui/icons
+            ];
+          };
+          nativeBuildInputs = with pkgs; [
+            glib
+            libxml2
+            python3
+          ];
+          buildPhase = ''
+            runHook preBuild
+            glib-compile-resources --sourcedir=src/gui --target=icons.gresource src/gui/icons.gresource.xml
+            python3 gen-gresource-xml.py ${web-linux} webui.generated.xml
+            glib-compile-resources --target=webui.gresource webui.generated.xml
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp icons.gresource webui.gresource "$out"/
+            runHook postInstall
+          '';
+        };
+        rust-gui-bin = craneLib.buildPackage (
+          rustArgsNative-gui
+          // {
+            meta.mainProgram = "obscura-gui";
+            OBSCURA_VERSION = version;
+            OBSCURA_GRESOURCES_DIR = "${gui-gresources}";
+          }
+        );
+
+        xtask = craneLib.buildPackage {
+          src = ./xtask;
+          strictDeps = true;
+        };
+
+        nodeModules = pkgs.importNpmLock.buildNodeModules {
+          npmRoot = ./obscura-ui;
+          nodejs = pkgs.nodejs;
+        };
+
+        nodeDerivation =
+          {
+            name,
+            nativeBuildInputs ? [ ],
+            preBuildPhases ? [ ],
+            ...
+          }@args:
+          pkgs.stdenv.mkDerivation (
+            args
+            // {
+              name = "obscuravpn-client-${name}";
+
+              nativeBuildInputs = nativeBuildInputs ++ [ pkgs.nodejs ];
+
+              preBuildPhases = [ "preBuildNodeDerivation" ] ++ preBuildPhases;
+              preBuildNodeDerivation = ''
+                ln -s ${nodeModules}/node_modules .
+                export PATH="${nodeModules}/node_modules/.bin/:$PATH"
+              '';
+            }
+          );
+
+        licenses =
+          pkgs.runCommand "licenses.json"
+            {
+              nativeBuildInputs = [ pkgs.nodejs ];
+
+              LICENSES_NODE = licenses-node;
+              LICENSES_RUST = licenses-rust;
+            }
+            ''
+              node ${contrib/licenses.mjs} >"$out"
+            '';
+
+        licenses-node = nodeDerivation {
+          name = "licenses-node.json";
+
+          src = lib.fileset.toSource {
+            root = ./obscura-ui;
+            fileset = lib.fileset.unions [
+              ./obscura-ui/package.json
+              ./obscura-ui/package-lock.json
+            ];
+          };
+
+          buildPhase = ''
+            npm run --silent license-node -- --start ${nodeModules} >"$out"
+          '';
+        };
+
+        licenses-rust = craneLib.mkCargoDerivation (
+          rustArgs
+          // {
+            name = "licenses-rust.json";
+            nativeBuildInputs = [ pkgs.cargo-about ];
+            src = lib.fileset.toSource {
+              root = ./rustlib;
+              fileset = lib.fileset.unions [
+                rustlib/about.toml
+                rustlib/Cargo.lock
+                rustlib/Cargo.toml
+              ];
+            };
+            buildPhaseCargoCommand = ''
+              mkdir -p src/bin/obscura
+              touch src/bin/obscura/main.rs src/lib.rs
+              cp ${./LICENSE} ../LICENSE
+              cargo-about generate --format=json --fail >"$out"
+            '';
+            installPhase = " ";
+          }
+        );
+
+        mkWeb =
+          platform:
+          nodeDerivation {
+            name = "web-${platform}";
+
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./apple/client/Assets.xcassets
+                ./obscura-ui
+              ];
+            };
+
+            LICENSE_JSON = licenses;
+            OBS_WEB_PLATFORM = platform;
+
+            buildPhase = ''
+              pushd obscura-ui
+
+              npm run build
+
+              popd
+            '';
+
+            installPhase = ''
+              mv obscura-ui/build $out
+            '';
+          };
+
+        web-android = mkWeb "android";
+        web-ios = mkWeb "iphoneos";
+        web-macos = mkWeb "macosx";
+        web-linux = mkWeb "linux";
+
+        # https://nixos.org/manual/nixpkgs/stable/#gradle
+        gradleDerivation =
+          {
+            name,
+            task,
+            appOutputs,
+          }@args:
+          pkgs.stdenv.mkDerivation (
+            finalAttrs:
+            androidGradleEnv
+            // {
+              name = "obscura-${name}";
+
+              src = (
+                lib.fileset.toSource {
+                  root = ./android;
+                  fileset = lib.fileset.unions [
+                    android/app/build.gradle.kts
+                    android/app/google-services.json
+                    android/app/proguard-rules.pro
+                    android/app/src
+                    android/build.gradle.kts
+                    android/buildSrc/build.gradle.kts
+                    android/buildSrc/settings.gradle.kts
+                    android/buildSrc/src
+                    android/detekt.yml
+                    android/gradle.properties
+                    android/gradle/libs.versions.toml
+                    android/lib/billing/build.gradle.kts
+                    android/lib/billing/src
+                    android/lib/util/build.gradle.kts
+                    android/lib/util/src
+                    android/settings.gradle.kts
+                  ];
+                }
+              );
+
+              nativeBuildInputs = [ pkgs.gradle ];
+
+              mitmCache = pkgs.gradle.fetchDeps {
+                pkg = finalAttrs.finalPackage;
+                data = android/gradle/mitm-cache/deps.json;
+              };
+
+              # Accounts for check-only dependencies + tools needed for building an APK/AAB
+              gradleUpdateTask = "check extractReleaseAnnotations";
+              # This is more robust than `nixDownloadDeps`, and will become the default once a Gradle bug is fixed that's only known to impact one project.
+              # https://github.com/NixOS/nixpkgs/issues/365086
+              # https://github.com/NixOS/nixpkgs/pull/383115
+              gradleUpdateScript = ''
+                runHook preBuild
+                gradle ${finalAttrs.gradleUpdateTask} --write-verification-metadata sha256
+              '';
+
+              ANDROID_USER_HOME = "/tmp/";
+              gradleBuildTask = task;
+              gradleFlags = gradleFlags;
+
+              patchPhase = ''
+                # TODO: Find a cleaner way to pass these inputs that works during dev as well.
+                ln -sfv ${rust-android}/lib/libobscuravpn_client.so app/src/main/jniLibs/arm64-v8a/
+                ln -sfv ${web-android} app/src/main/assets/web
+              '';
+
+              APP_OUTPUTS = toString (map lib.strings.escapeShellArg appOutputs);
+              installPhase = ''
+                mkdir $out
+                for output in $APP_OUTPUTS; do
+                  cp -v app/build/outputs/$output $out/
+                done
+              '';
+
+              doCheck = true;
+              # Checking a specific flavor is impossible:
+              # https://issuetracker.google.com/issues/63810920
+              gradleCheckTask = "check";
+            }
+          );
+
+        apks-foss = gradleDerivation {
+          name = "apks-foss";
+          task = "assembleFoss";
+          appOutputs = [
+            "apk/foss/debug/app-foss-debug-unsigned.apk"
+            "apk/foss/release/app-foss-release-unsigned.apk"
+          ];
+        };
+        apks-play = gradleDerivation {
+          name = "apks-play";
+          task = "assemblePlay";
+          appOutputs = [
+            "apk/play/debug/app-play-debug-unsigned.apk"
+            "apk/play/release/app-play-release-unsigned.apk"
+          ];
+        };
+        aab-play-debug = gradleDerivation {
+          name = "aab-play-debug";
+          task = "bundlePlayDebug";
+          appOutputs = [ "bundle/playDebug/app-play-debug.aab" ];
+        };
+        aab-play-release = gradleDerivation {
+          name = "aab-play-release";
+          task = "bundlePlayRelease";
+          appOutputs = [ "bundle/playRelease/app-play-release.aab" ];
+        };
+
+        nixFiles = lib.sources.sourceFilesBySuffices evaluatedSource [ ".nix" ];
+        shellFiles = lib.sources.sourceFilesBySuffices evaluatedSource [
+          ".bash"
+          ".sh"
+          ".shellcheckrc"
+        ];
+
+        swiftFiles =
+          lib.sources.sourceFilesBySuffices
+            (lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./.swiftformat
+                apple/client
+              ];
+            })
+            [
+              ".swift"
+              ".swiftformat"
+            ];
+      in
+      {
+        apps = {
+          gradle-deps-update = {
+            type = "app";
+            program = toString apks-foss.mitmCache.updateScript;
+          };
+        };
+
+        checks = {
+          inherit
+            apks-foss
+            aab-play-release
+            hash
+            licenses
+            rust
+            rust-android
+            web-android
+            web-ios
+            web-macos
+            ;
+          taplo =
+            pkgs.runCommand "taplo-check"
+              {
+                nativeBuildInputs = [ pkgs.taplo ];
+                src = lib.sources.cleanSourceWith {
+                  src = self;
+                  filter = path: type: type == "directory" || lib.hasSuffix ".toml" path;
+                };
+              }
+              ''
+                cd $src
+                taplo format --check
+                touch $out
+              '';
+        }
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          inherit rust-cli-bin rust-gui-bin;
+          clippy-gui = craneLib.cargoClippy (
+            rustArgsNative-gui
+            // {
+              cargoClippyExtraArgs = "-- -Dwarnings";
+              OBSCURA_GRESOURCES_DIR = "${gui-gresources}";
+            }
+          );
+        }
+        // {
+          clippy = craneLib.cargoClippy (rustArgs // { cargoClippyExtraArgs = "--all-targets -- -Dwarnings"; });
+
+          shellcheck = pkgs.runCommand "shellcheck" { nativeBuildInputs = [ pkgs.shellcheck ]; } ''
+            shopt -s globstar
+            shellcheck -P ${shellFiles} -- ${shellFiles}/**/*.{bash,sh}
+            touch "$out"
+          '';
+
+          rustfmt = craneLib.cargoFmt rustArgs;
+
+          swiftformat = pkgs.runCommand "swiftformat" { nativeBuildInputs = [ pkgs.swiftformat ]; } ''
+            swiftformat --lint ${swiftFiles}
+            touch "$out"
+          '';
+
+          typescript = nodeDerivation {
+            name = "typescript";
+
+            src = ./obscura-ui;
+
+            buildPhase = ''
+              tsc --noEmit
+              touch "$out"
+            '';
+          };
+
+          nixfmt = pkgs.runCommand "nixfmt" { nativeBuildInputs = [ pkgs.nixfmt ]; } ''
+            nixfmt --width=120 --check ${nixFiles}
+            touch "$out"
+          '';
+          ast-grep-message-ids =
+            let
+              src = lib.sources.cleanSourceWith {
+                src = self;
+                filter =
+                  path: type:
+                  type == "directory"
+                  || lib.hasSuffix ".rs" path
+                  || baseNameOf path == "sgconfig.yml"
+                  || lib.hasPrefix (toString ./contrib/sg-rules) path;
+              };
+            in
+            pkgs.runCommand "ast-grep-message-ids" { nativeBuildInputs = [ pkgs.ast-grep ]; } ''
+              ast-grep scan --config ${src}/sgconfig.yml --report-style short ${src}
+              touch "$out"
+            '';
+          duplicate-message-ids =
+            let
+              src = lib.sources.cleanSourceWith {
+                src = self;
+                filter = path: type: type == "directory" || lib.hasSuffix ".rs" path;
+              };
+            in
+            pkgs.runCommand "duplicate-message-ids" { nativeBuildInputs = [ xtask ]; } ''
+              xtask check-duplicates ${src}
+              touch "$out"
+            '';
+        };
+
+        devShells = {
+          default = pkgs.mkShellNoCC {
+            packages = [
+              pkgs.gnused
+              pkgs.gradle
+              pkgs.jq
+              pkgs.just
+              pkgs.nixfmt
+              pkgs.nodejs
+              pkgs.shellcheck
+              pkgs.swiftformat
+              pkgs.taplo
+              rustToolchain.passthru.availableComponents.rustfmt # Just rustfmt, nothing else
+            ]
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux (rustArgsNative-gui.buildInputs ++ rustArgs.nativeBuildInputs)
+            ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.create-dmg ];
+
+            shellHook = ''
+              export OBSCURA_MAGIC_IN_NIX_SHELL=1
+            '';
+          };
+
+          web = pkgs.mkShellNoCC {
+            packages = [
+              pkgs.just
+              pkgs.nodejs
+              pkgs.pnpm
+            ];
+
+            # This only changes when our dependencies or license config changes and is relatively slow.
+            # So build it once and cache it.
+            LICENSE_JSON = licenses;
+          };
+
+          android = pkgs.mkShellNoCC (
+            androidGradleEnv
+            // androidRustEnv
+            // {
+              buildInputs = [
+                pkgs.libiconv
+                pkgs.taplo
+              ]
+              ++ rustArgs-android.buildInputs;
+              nativeBuildInputs = [
+                android.cmake
+                android.emulator
+                android.platform-tools
+                rustToolchain
+                pkgs.firebase-tools
+                pkgs.gradle
+                pkgs.jdk21
+                pkgs.just
+                pkgs.ninja
+                pkgs.nodejs
+                pkgs.pkg-config
+                pkgs.pnpm
+              ]
+              ++ rustArgs-android.nativeBuildInputs;
+
+              GRADLE_OPTS = lib.concatStringsSep " " gradleOpts; # Doesn't support spaces.
+              JAVA_HOME = pkgs.jdk21.home;
+
+              shellHook = ''
+                export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:${androidBuildTools}:$PATH"
+              '';
+            }
+          );
+        }
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          gui = pkgs.mkShell {
+            inputsFrom = [ rust-gui-bin ];
+            packages = [
+              pkgs.just
+              pkgs.python3
+            ];
+            OBSCURA_GRESOURCES_DIR = "${gui-gresources}";
+          };
+        };
+
+        packages = {
+          inherit
+            apks-foss
+            apks-play
+            aab-play-debug
+            aab-play-release
+            gui-gresources
+            hash
+            licenses
+            licenses-node
+            licenses-rust
+            rust
+            web-android
+            web-ios
+            web-linux
+            web-macos
+            ;
+          version = pkgs.writeText "version.txt" version;
+        }
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux { inherit rust-cli-bin rust-gui-bin; };
+      }
+    );
+}

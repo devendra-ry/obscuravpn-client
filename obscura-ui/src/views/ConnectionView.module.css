@@ -1,0 +1,101 @@
+.container {
+    position: relative;
+    isolation: isolate;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.content {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+}
+
+.deco {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: -1;
+}
+
+.mascot {
+    display: block;
+    width: 100%;
+    max-width: 90px;
+    height: auto;
+}
+
+.connectionProgressBarContainer {
+    width: 80%;
+    min-width: fit-content;
+    margin-bottom: var(--mantine-spacing-lg);
+    background-color: light-dark(var(--mantine-color-dark-8), var(--mantine-color-dark-6)) !important;
+}
+
+.progress,
+.obscuraNotConnectedProgressBar {
+    background-color: light-dark(var(--mantine-color-dark-4), var(--mantine-color-dark-3)) !important;
+}
+
+.connectionProgressBarGroup {
+    justify-content: center !important;
+
+    @media (min-width: 600px) {
+        justify-content: space-between !important;
+    }
+}
+
+.obscuraNotConnectedProgressBar {
+    width: calc(100vw * 0.33);
+
+    @media (min-width: 700px) {
+        width: 325px;
+    }
+}
+
+.locationDividerCaption {
+    width: 28rem;
+}
+
+.subtitle {
+    color: light-dark(var(--mantine-color-dark-4), var(--mantine-color-dark-2));
+}
+
+.checkMyConnection {
+    color: light-dark(var(--mantine-color-gray-6), var(--mantine-color-gray-5));
+}
+
+.container {
+    padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+    padding-left: var(--safe-area-inset-left, env(safe-area-inset-left));
+    padding-right: var(--safe-area-inset-right, env(safe-area-inset-right));
+    padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom));
+}
+
+@media screen and (max-width: $mantine-breakpoint-xs) {
+    .connectionProgressBarContainer {
+        width: 85%;
+    }
+
+    .connectionProgressBarGroup {
+        gap: 0 !important;
+    }
+
+    .obscuraNotConnected {
+        padding-left: var(--mantine-spacing-lg) !important;
+        padding-right: var(--mantine-spacing-lg) !important;
+    }
+
+    .locationDividerCaption {
+        width: 320px;
+    }
+}
+
+@media screen and (max-height: $mantine-breakpoint-xs) {
+    .connectionProgressBarContainer {
+        margin-bottom: var(--mantine-spacing-sm);
+    }
+}

@@ -1,0 +1,11 @@
+{
+  "profiles": {
+    "obscura-client (Package)": {
+      "commandName": "MsixPackage",
+      "nativeDebugging": true
+    },
+    "obscura-client (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}

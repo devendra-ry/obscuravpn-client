@@ -1,0 +1,410 @@
+import { AppShell, AppShellMain } from '@mantine/core';
+import { useHotkeys, useThrottledValue } from '@mantine/hooks';
+import { notifications } from '@mantine/notifications';
+import { ReactNode, useContext, useEffect, useRef, useState } from 'react';
+import { ErrorBoundary } from 'react-error-boundary';
+import { useTranslation } from 'react-i18next';
+import { Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+
+import classes from './App.module.css';
+import * as commands from './bridge/commands';
+import { HAS_NE_VPN_STATUS, IS_HANDHELD_DEVICE, logReactError, PLATFORM, Platform, useSystemChecks } from './bridge/SystemProvider';
+import { AppContext, AppStatus, ConnectionInProgress, connectionIsIdle, getEffectiveOsStatus, latestAppStatus, linuxDegradation, NavigationView, NEVPNStatus, OsStatus, OsStatusWVpnStatus, windowsDegradation } from './common/appContext';
+import commonClasses from './common/common.module.css';
+import { ServiceStatusOutput } from './common/api';
+import { fmt } from './common/fmt';
+import { NotificationId } from './common/notifIds';
+import { useAsync } from './common/useAsync';
+import { useLoadable } from './common/useLoadable';
+import { useSetAppearance } from './common/useSetAppearance';
+import { MIN_LOAD_MS, normalizeError, showErrorNotification, sleep } from './common/utils';
+import { CColorSchemeContext } from './components/CachedColorScheme';
+import { ScrollableView } from './components/ScrollableView';
+import { VpnError } from './components/VpnErrorFmt';
+import { About, Account, Connection, DeveloperView, FallbackAppRender, Help, Location, LogIn, Settings, SplashScreen, Apps } from './views';
+
+// imported views need to be added to the `views` list variable
+interface View {
+  component: () => ReactNode,
+  path: string,
+  exact?: boolean,
+  needsScroll: boolean,
+  // View's own root applies insets — skip the wrapping inset container.
+  selfInsets?: boolean,
+}
+
+export default function () {
+  const { t } = useTranslation();
+  const colorScheme = useContext(CColorSchemeContext);
+  const setAppearance = useSetAppearance();
+
+  const toggleColorScheme = () => setAppearance(colorScheme === 'dark' ? 'light' : 'dark');
+
+  useSystemChecks();
+  useHotkeys([[PLATFORM === Platform.macOS ? 'mod+J' : 'ctrl+J', toggleColorScheme]]);
+
+  // App State
+  const [vpnConnected, setVpnConnected] = useState(false);
+  // keep track of how the connection was initiated to show correct transitioning UI
+  const [initiatingExitSelector, setInitiatingExitSelector] = useState<commands.ExitSelector>();
+  const [connectionInProgress, setConnectionInProgress] = useState<ConnectionInProgress>(ConnectionInProgress.UNSET);
+  const [appStatus, setStatus] = useState<AppStatus | null>(null);
+  const [osStatus, setOsStatus] = useState<OsStatus | null>(null);
+  const [isProcessingPayment, setPaymentProcessing] = useState(false);
+  const [apiServiceStatus, setApiServiceStatus] = useState<ServiceStatusOutput | null>(null);
+  const [apiServiceStatusLoaded, setApiServiceStatusLoaded] = useState(false);
+  const ignoreConnectingErrors = useRef(false);
+
+  const routes: View[] = [
+    { component: Connection, path: '/', needsScroll: false, selfInsets: true },
+    { component: Connection, path: '/connection', needsScroll: false, selfInsets: true },
+    { component: DeveloperView, path: '/developer', needsScroll: true },
+    { component: Location, path: '/location', needsScroll: true },
+    { component: Account, path: '/account', needsScroll: false },
+    { component: Help, path: '/help', needsScroll: false },
+    { component: About, path: '/about', needsScroll: true },
+    { component: Settings, path: '/settings', needsScroll: true },
+    { component: Apps, path: '/apps', needsScroll: true }
+  ];
+
+  const isLoggedIn = !!appStatus?.accountId;
+  const showAccountCreation = appStatus?.inNewAccountFlow;
+  const fetchingStatuses = appStatus === null || osStatus === null;
+
+  const { execute: disconnect } = commands.useCommand({ command: commands.disconnect, showNotification: true, rethrow: true });
+
+  async function tryConnect(exit: commands.ExitSelector) {
+    setInitiatingExitSelector(exit);
+    if (vpnConnected) {
+      setConnectionInProgress(ConnectionInProgress.ChangingLocations);
+    } else {
+      setConnectionInProgress(ConnectionInProgress.Connecting);
+    }
+    ignoreConnectingErrors.current = false;
+    try {
+      await commands.connect(exit);
+    } catch (e) {
+      const error = normalizeError(e);
+      if (error.message === 'accountExpired') {
+        void pollAccount();
+      }
+      if (!ignoreConnectingErrors.current && error.message !== 'tunnelNotDisconnected') {
+        notifications.hide(NotificationId.VPN_ERROR);
+        notifications.show({ title: t('Error Connecting'), message: <VpnError errorEnum={error.message} />, color: 'red', id: NotificationId.VPN_ERROR, autoClose: false });
+        // see https://linear.app/soveng/issue/OBS-775/not-starting-tunnel-because-it-isnt-disconnected-connecting#comment-e98a7150
+        setConnectionInProgress(ConnectionInProgress.UNSET);
+      }
+    }
+  }
+
+  async function disconnectFromVpn() {
+    ignoreConnectingErrors.current = true;
+    setConnectionInProgress(ConnectionInProgress.Disconnecting);
+    setVpnConnected(false);
+    try {
+      await disconnect();
+    } catch {
+      // set vpn status to what appStatus reports
+      try {
+        const appStatus = await commands.status(null);
+        if (appStatus.vpnStatus.connecting?.reconnecting) {
+          setConnectionInProgress(ConnectionInProgress.Reconnecting);
+        } else if (appStatus.vpnStatus.connecting?.reconnecting === false) {
+          setConnectionInProgress(ConnectionInProgress.Connecting);
+        } else {
+          setConnectionInProgress(ConnectionInProgress.UNSET);
+        }
+        setVpnConnected(appStatus.vpnStatus.connected !== undefined);
+      } catch (error) {
+        const e = normalizeError(error);
+        console.error('disconnectFromVpn could not rollback vpn status because command getStatus failed', e.message);
+        // rollback to original value
+        setVpnConnected(true);
+      }
+    }
+  }
+
+  function notifyVpnError(errorEnum: string) {
+    // see enum JsVpnError in commands.swift
+    if (errorEnum !== null) {
+      notifications.hide(NotificationId.VPN_ERROR);
+      notifications.show({
+        id: NotificationId.VPN_ERROR,
+        withCloseButton: true,
+        color: 'red',
+        title: t('Error'),
+        message: <VpnError errorEnum={errorEnum} />,
+        autoClose: 15_000
+      });
+    }
+  }
+
+  function handleNewStatus(newStatus: AppStatus) {
+    const vpnStatus = newStatus.vpnStatus;
+    if (vpnStatus === undefined) return;
+
+    if (vpnStatus.connected !== undefined) {
+      // Ignore stale connected status while a disconnect is in flight — otherwise the
+      // connected UI flashes between the click and the backend clearing vpnStatus.connected.
+      if (connectionInProgress === ConnectionInProgress.Disconnecting) return;
+      setVpnConnected(true);
+      setConnectionInProgress(ConnectionInProgress.UNSET);
+      notifications.hide(NotificationId.VPN_ERROR);
+      notifications.update({
+        id: NotificationId.VPN_DISCONNECT_CONNECT,
+        message: undefined,
+        color: 'green',
+        autoClose: 1000
+      });
+    } else if (vpnStatus.connecting !== undefined) {
+      setVpnConnected(false);
+      const reconnecting = vpnStatus.connecting.reconnecting;
+      setConnectionInProgress(value => {
+        if (reconnecting) return ConnectionInProgress.Reconnecting;
+        if (value === ConnectionInProgress.ChangingLocations) return value;
+        return ConnectionInProgress.Connecting;
+      });
+      const connectError = vpnStatus.connecting?.connectError;
+      if (connectError) {
+        if (reconnecting) {
+          console.error(`got error while reconnecting: ${connectError}`);
+        } else {
+          console.error(`got error while connecting: ${connectError}`);
+        }
+        console.log(fmt`vpnStatus = ${vpnStatus}`);
+        notifyVpnError(connectError);
+      }
+    } else if (vpnStatus.disconnected !== undefined && !HAS_NE_VPN_STATUS) {
+      setConnectionInProgress(ConnectionInProgress.UNSET);
+      setVpnConnected(false);
+      setInitiatingExitSelector(undefined);
+    }
+  }
+
+  // TODO: Remove in favor of polling merged OsStatus/Status type: https://linear.app/soveng/issue/OBS-3889
+  useEffect(() => {
+    if (PLATFORM === Platform.Linux) return;
+    let knownStatusId = null;
+    let keepAlive = true;
+    (async () => {
+      while (keepAlive) {
+        try {
+          let newStatus = await commands.status(knownStatusId);
+          knownStatusId = newStatus.version;
+          setStatus(newStatus);
+        } catch (error) {
+          const e = normalizeError(error);
+          console.error('command status failed', e.message);
+          notifications.hide(NotificationId.STATUS_FETCH_ERROR);
+          notifications.show({ title: t('errorFetchingStatus'), message: e.message, color: 'red', id: NotificationId.STATUS_FETCH_ERROR, autoClose: false });
+        }
+      }
+    })();
+    return () => { keepAlive = false; };
+  }, []);
+
+  // TODO: Remove in favor of polling merged OsStatus/Status type: https://linear.app/soveng/issue/OBS-3889
+  useEffect(() => {
+    if (PLATFORM === Platform.Linux) return;
+    let knownOsStatusId = null;
+    let keepAlive = true;
+    (async () => {
+      while (keepAlive) {
+        try {
+          let newOsStatus = await commands.osStatus(knownOsStatusId);
+          knownOsStatusId = newOsStatus.version;
+          setOsStatus(newOsStatus);
+        } catch (error) {
+          const e = normalizeError(error);
+          console.error('command osStatus failed', e.message);
+          notifications.show({ title: t('errorFetchingOsStatus'), message: e.message, color: 'red' });
+        }
+      }
+    })();
+    return () => { keepAlive = false; };
+  }, []);
+
+  useEffect(() => {
+    if (PLATFORM !== Platform.Linux) return;
+    let knownOsStatusId: string | null = null;
+    let keepAlive = true;
+    (async () => {
+      while (keepAlive) {
+        try {
+          const newOsStatus = await commands.osStatus(knownOsStatusId);
+          knownOsStatusId = newOsStatus.version;
+          setOsStatus(newOsStatus);
+          const newAppStatus = latestAppStatus(newOsStatus.serviceStatus);
+          if (newAppStatus !== undefined) {
+            setStatus(prev => (prev?.version === newAppStatus.version ? prev : newAppStatus));
+          }
+        } catch (error) {
+          const e = normalizeError(error);
+          console.error('command osStatus failed', e.message);
+          notifications.show({ title: t('errorFetchingOsStatus'), message: e.message, color: 'red' });
+          await sleep(1000);
+        }
+      }
+    })();
+    return () => { keepAlive = false; };
+  }, []);
+
+  useEffect(() => {
+    commands.getServiceStatus()
+      .then(setApiServiceStatus)
+      .catch(() => setApiServiceStatus(null))
+      .finally(() => setApiServiceStatusLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    if (appStatus !== null) handleNewStatus(appStatus);
+  }, [appStatus]);
+
+  useEffect(() => {
+    if (osStatus !== null && HAS_NE_VPN_STATUS) {
+      const { osVpnStatus } = osStatus as OsStatusWVpnStatus;
+      switch (osVpnStatus) {
+        case NEVPNStatus.Disconnecting:
+          setConnectionInProgress(ConnectionInProgress.Disconnecting);
+          break;
+        case NEVPNStatus.Disconnected:
+          setConnectionInProgress(ConnectionInProgress.UNSET);
+          setVpnConnected(false);
+          setInitiatingExitSelector(undefined);
+          break;
+        case NEVPNStatus.Connected:
+          setInitiatingExitSelector(undefined);
+          break;
+      }
+    }
+  }, [osStatus]);
+
+  async function errorBoundaryOnReset() {
+    let targetView: NavigationView;
+    if (!osStatus?.navigationView || osStatus?.navigationView === NavigationView.Connection) {
+      targetView = NavigationView.Help;
+    } else {
+      targetView = NavigationView.Connection;
+    }
+    try {
+      await commands.setNavigationView(targetView);
+    } catch (e) {
+      showErrorNotification(t, e, 'navigationFailed');
+    }
+    console.log(`resetting to ${targetView} (osStatus reports ${osStatus?.navigationView})`);
+  }
+
+  const onPaymentSucceeded = () => {
+    console.log("handling paymentSucceeded event");
+    void pollAccount();
+    commands.setInNewAccountFlow(false);
+  }
+
+  // deep link payment succeeded
+  useEffect(() => {
+    window.addEventListener('paymentSucceeded', onPaymentSucceeded);
+    return () => window.removeEventListener('paymentSucceeded', onPaymentSucceeded);
+  }, []);
+
+  const {
+    lastSuccessfulValue: accountInfo,
+    error: accountInfoError,
+    refresh: pollAccount,
+    loading: accountLoading
+  } = useLoadable({
+    skip: !osStatus?.internetAvailable || !isLoggedIn,
+    load: commands.getAccount,
+    periodMs: isProcessingPayment ? 3000 : (showAccountCreation ? 60 * 1000 : 12 * 3600 * 1000),
+    returnError: true,
+  });
+  const accountLoadingDelayed = useThrottledValue(accountLoading, accountLoading ? MIN_LOAD_MS : 0);
+
+  useEffect(() => {
+    if (isProcessingPayment && accountInfo?.active) {
+      setPaymentProcessing(false);
+      commands.setInNewAccountFlow(false);
+      commands.resetOfferCodeRedemptionSuccess();
+    }
+  }, [accountInfo, isProcessingPayment]);
+
+  useEffect(() => {
+    if (accountInfoError) {
+      console.error("Failed to fetch account info", accountInfoError);
+      // We just ignore errors, they will be shown if the user goes to the account page.
+    }
+  }, [accountInfoError]);
+
+  const _ = useAsync({
+    skip: osStatus === null || (!osStatus.internetAvailable || IS_HANDHELD_DEVICE),
+    load: commands.checkForUpdates,
+    returnError: true,
+  });
+
+  const linuxDegraded = linuxDegradation(osStatus?.serviceStatus);
+  const windowsDegraded = windowsDegradation(osStatus?.serviceStatus);
+  const showLogin = !isLoggedIn || !!showAccountCreation;
+  // The trial flag must resolve before the login button paints, otherwise the label flashes.
+  if (fetchingStatuses || linuxDegraded || windowsDegraded || (showLogin && !apiServiceStatusLoaded)) {
+    const effectiveOsStatus = osStatus === null ? null : { ...osStatus, osVpnStatus: getEffectiveOsStatus(osStatus, appStatus) };
+    return <SplashScreen osStatus={effectiveOsStatus} linuxDegradation={linuxDegraded} windowsDegradation={windowsDegraded} />;
+  }
+
+  const osVpnStatus = getEffectiveOsStatus(osStatus, appStatus);
+
+  const appContext = {
+    accountInfo: accountInfo ?? null,
+    apiServiceStatus,
+    appStatus,
+    connectionInProgress,
+    osStatus: { ...osStatus, osVpnStatus },
+    pollAccount,
+    showOfflineUI: !osStatus.internetAvailable && connectionIsIdle(connectionInProgress, appStatus.vpnStatus, osVpnStatus),
+    accountLoading: accountLoadingDelayed,
+    vpnConnect: tryConnect,
+    vpnConnected,
+    vpnDisconnect: disconnectFromVpn,
+    initiatingExitSelector,
+    isProcessingPayment,
+    setPaymentProcessing,
+  }
+
+  if (showLogin) {
+    return (
+      <AppContext.Provider value={appContext}>
+        <LogIn accountNumber={appStatus.accountId} accountActive={accountInfo?.active} trialAvailable={apiServiceStatus?.free_trial.available ?? false} />
+      </AppContext.Provider>
+    );
+  }
+
+
+  return <>
+    <AppShell
+      header={{ height: 0 }}
+      navbar={undefined}
+      classNames={{ root: classes.appShell }}>
+      <AppShellMain>
+        <AppContext.Provider value={appContext}>
+          <ErrorBoundary FallbackComponent={FallbackAppRender} onReset={_details => errorBoundaryOnReset()} onError={logReactError}>
+            <Routes location={osStatus?.navigationView ? `/${osStatus.navigationView}` : undefined}>
+              {routes.map((view, index) => <Route key={index} path={view.path} element={<RenderView key={view.path} view={view} />} />)}
+            </Routes>
+          </ErrorBoundary>
+        </AppContext.Provider>
+      </AppShellMain>
+    </AppShell>
+  </>;
+}
+
+function RenderView({ view }: { view: View }) {
+  if (view.needsScroll) {
+    return <ScrollableView><view.component /></ScrollableView>;
+  }
+  if (view.selfInsets) {
+    return <view.component />;
+  }
+  return (
+    <div className={commonClasses.applyInsets} style={{ height: '100vh' }}>
+      <view.component />
+    </div>
+  );
+}

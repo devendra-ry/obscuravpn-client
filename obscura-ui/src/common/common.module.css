@@ -1,0 +1,56 @@
+.chip {
+    border-radius: 5px;
+    border-width: 1px;
+    border-style: solid;
+    border-color: var(-mantine-color-teal-1);
+}
+
+.button {
+
+    &:disabled,
+    &[data-disabled] {
+        border-color: light-dark(var(--mantine-color-gray-3), var(--mantine-color-dark-4));
+        background-color: light-dark(var(--mantine-color-gray-6), var(--mantine-color-dark-3));
+        color: var(--mantine-color-white)
+    }
+}
+
+@media screen and (max-width: $mantine-breakpoint-xs) {
+    .desktopOnly {
+        display: none;
+    }
+}
+
+@media screen and (min-width: $mantine-breakpoint-xs) {
+    .mobileOnly {
+        display: none !important;
+    }
+}
+
+.elevatedSurface {
+    background-color: light-dark(var(--mantine-color-body), var(--mantine-color-dark-6)) !important;
+}
+
+.svgThemed {
+    fill: light-dark(black, white);
+}
+
+.wordmark {
+    fill: light-dark(black, var(--mantine-color-gray-4));
+}
+
+.secondaryColor {
+    color: light-dark(var(--mantine-color-gray-7), var(--mantine-color-gray-text)) !important;
+}
+
+.applyInsets {
+    padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+    padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom));
+    padding-left: var(--safe-area-inset-left, env(safe-area-inset-left));
+    padding-right: var(--safe-area-inset-right, env(safe-area-inset-right));
+}
+
+.applySideInsets {
+    padding-left: var(--safe-area-inset-left, env(safe-area-inset-left));
+    padding-right: var(--safe-area-inset-right, env(safe-area-inset-right));
+}

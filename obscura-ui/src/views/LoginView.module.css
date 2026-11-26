@@ -1,0 +1,64 @@
+.animatedAccountId {
+    justify-content: center;
+    display: flex;
+    overflow: hidden;
+    font-variant: tabular-nums;
+}
+
+.digitsWheel {
+    position: relative;
+    width: 1ch;
+    font-variant: tabular-nums;
+}
+
+.digit {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-items: center;
+}
+
+.backgroundImage {
+    background-repeat: no-repeat;
+    background-size: contain;
+}
+
+.loginContainer {
+    min-height: 100vh;
+    gap: 20px !important;
+    background-position: top;
+    padding-top: 28vh;
+    @mixin dark {
+        background-color: var(--mantine-color-dark-8);
+    }
+}
+
+.loginContainerHandheld {
+    background-position: bottom;
+    padding-top: 23vh;
+    padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom));
+    @media (orientation: portrait) {
+        /* when the soft keyboard is open,
+           this padding ensures that the background image
+           is below the debug bundle label
+         */
+        padding-bottom: 120px;
+    }
+    @media (orientation: landscape) {
+        padding-top: 8vh;
+    }
+}
+
+.sectionContainer {
+    background-color: light-dark(white, var(--mantine-color-dark-8));
+    padding: 0 0.5em 0.5em 0.5em;
+}
+
+.copyAccountStack {
+    min-height: 29vh;
+    max-height: 51vh;
+    @media (orientation: landscape) {
+        min-height: 41vh;
+    }
+}

@@ -1,0 +1,213 @@
+import Combine
+import OrderedCollections
+import SwiftUI
+import UIKit
+import WebKit
+
+// In SwiftUI in iOS targeting a minimum SDK of 18.0 SwiftUI TabView
+// requires each tab views view to be different. Sharing the same web view
+// between them creates significant problems. Workarounds were tried
+// going to just use UIKit.
+
+class ObscuraUIIOSViewAndTabsViewController: UIViewController {
+    private var appState: AppState
+    private var insetBottom = 0.0
+    private var isKeyboardOpen = false
+    private let webView: ObscuraUIWebView
+    private let tabBar: UITabBar
+    private let tabBarItems: [UITabBarItem]
+    private let webviewsController: WebviewsController
+    private let tabs: OrderedSet<AppView>
+
+    var showTabBar: Bool {
+        didSet {
+            self.setupLayout()
+        }
+    }
+
+    private var cancellables = Set<AnyCancellable>()
+
+    init(
+        appState: AppState,
+        webView: ObscuraUIWebView,
+        webviewsController: WebviewsController,
+        tabs: OrderedSet<AppView>,
+        showTabBar: Bool
+    ) {
+        self.appState = appState
+        self.showTabBar = showTabBar
+        self.webView = webView
+        self.tabBar = UITabBar()
+        self.webviewsController = webviewsController
+        self.tabBarItems = tabs.map { view in
+            UITabBarItem(
+                title: view.rawValue.capitalized,
+                image: UIImage(systemName: view.systemImageName),
+                selectedImage: UIImage(systemName: view.systemImageName)
+            )
+        }
+        self.tabs = tabs
+
+        super.init(nibName: nil, bundle: nil)
+
+        self.setupTabBar()
+        self.setupLayout()
+
+        webviewsController.$tab.sink { [weak self] newTab in
+            self?.navigateTo(view: newTab)
+        }.store(in: &self.cancellables)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func sendSafeArea() {
+        if #available(iOS 26.0, *) {
+            self.webviewsController.safeAreaTx.yield(ObscuraUIWebView.Insets(bottom: self.isKeyboardOpen ? 0.0 : self.insetBottom))
+        }
+    }
+
+    @objc private func keyboardWillShow(notification: NSNotification) {
+        // iOS also delivers keyboard notifications for keyboards belonging to other apps (e.g. when switching in from an app with its keyboard open, or in multitasking). Only our own keyboard should affect the inset.
+        let isLocal = (notification.userInfo?[UIResponder.keyboardIsLocalUserInfoKey] as? Bool) ?? true
+        guard isLocal else { return }
+        self.isKeyboardOpen = true
+        self.sendSafeArea()
+    }
+
+    @objc private func keyboardWillHide(notification: NSNotification) {
+        self.isKeyboardOpen = false
+        self.sendSafeArea()
+    }
+
+    @objc private func appDidEnterBackground(notification: NSNotification) {
+        // Our keyboard is dismissed when backgrounded, and a hide notification isn't guaranteed. If focus is restored on return, a fresh local show notification will set this again.
+        self.isKeyboardOpen = false
+        self.sendSafeArea()
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(self.keyboardWillShow),
+            name: UIResponder.keyboardWillShowNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(self.keyboardWillHide),
+            name: UIResponder.keyboardWillHideNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(self.appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if #available(iOS 26.0, *) {
+            self.insetBottom = self.showTabBar ? UIScreen.main.bounds.height - self.tabBar.frame.minY : self.view.safeAreaInsets.bottom
+            self.sendSafeArea()
+        }
+    }
+
+    private func setupTabBar() {
+        self.tabBar.items = self.tabBarItems
+        self.tabBar.selectedItem = self.tabBarItems.first
+        self.tabBar.delegate = self
+        self.tabBar.tintColor = UIColor(named: "ObscuraOrange")
+    }
+
+    private func setupLayout() {
+        // Remove constraints and views if they were already subviews
+        self.webView.removeFromSuperview()
+        self.tabBar.removeFromSuperview()
+
+        view.addSubview(self.webView)
+        self.webView.translatesAutoresizingMaskIntoConstraints = false
+
+        if self.showTabBar {
+            view.insertSubview(self.tabBar, aboveSubview: self.webView)
+            self.tabBar.translatesAutoresizingMaskIntoConstraints = false
+
+            var webViewBottomAnchor = self.tabBar.topAnchor
+            var tabBarBottomAnchor = view.safeAreaLayoutGuide.bottomAnchor
+            if #available(iOS 26.0, *) {
+                webViewBottomAnchor = view.bottomAnchor
+                // Using the safe area here appears to result in double padding.
+                tabBarBottomAnchor = view.bottomAnchor
+            }
+
+            NSLayoutConstraint.activate([
+                self.webView.topAnchor.constraint(equalTo: view.topAnchor),
+                self.webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                self.webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                self.webView.bottomAnchor.constraint(equalTo: webViewBottomAnchor),
+
+                self.tabBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                self.tabBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                self.tabBar.bottomAnchor.constraint(equalTo: tabBarBottomAnchor),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                self.webView.topAnchor.constraint(equalTo: view.topAnchor),
+                self.webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                self.webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                self.webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+        }
+    }
+
+    private func navigateTo(view: AppView) {
+        if let index = tabs.firstIndex(of: view) {
+            self.tabBar.selectedItem = self.tabBarItems[index]
+        }
+        self.webView.navigateTo(appState: self.appState, view: view)
+    }
+}
+
+// MARK: - UITabBarDelegate
+
+extension ObscuraUIIOSViewAndTabsViewController: UITabBarDelegate {
+    func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
+        guard let index = tabBarItems.firstIndex(of: item), index < tabs.count else { return }
+
+        let selectedView = self.tabs[index]
+        self.webviewsController.tab = selectedView
+    }
+}
+
+// MARK: - SwiftUI Wrapper
+
+struct ObscuraUIIOSViewAndTabsWrapper: UIViewControllerRepresentable {
+    let appState: AppState
+    let webView: ObscuraUIWebView
+    let webviewsController: WebviewsController
+    let tabs: OrderedSet<AppView>
+    let showTabBar: Bool
+
+    func makeUIViewController(context: Context) -> ObscuraUIIOSViewAndTabsViewController {
+        return ObscuraUIIOSViewAndTabsViewController(
+            appState: self.appState,
+            webView: self.webView,
+            webviewsController: self.webviewsController,
+            tabs: self.tabs,
+            showTabBar: self.showTabBar
+        )
+    }
+
+    func updateUIViewController(_ uiViewController: ObscuraUIIOSViewAndTabsViewController, context: Context) {
+        uiViewController.showTabBar = self.showTabBar
+    }
+}

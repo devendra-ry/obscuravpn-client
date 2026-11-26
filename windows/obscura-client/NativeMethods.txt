@@ -1,0 +1,13 @@
+LoadImage
+IsIconic
+SetForegroundWindow
+ShowWindow
+CoWaitForMultipleObjects
+INFINITE
+CWMO_FLAGS
+EnumWindows
+GetWindowThreadProcessId
+SendMessageTimeout
+AllowSetForegroundWindow
+WM_COPYDATA
+COPYDATASTRUCT

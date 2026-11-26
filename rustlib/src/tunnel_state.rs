@@ -638,10 +638,6 @@ fn account_error_delay(error: &TunnelConnectError) -> Option<Duration> {
 /// A tunnel that lived this long worked. One that breaks sooner counts as a failed connect.
 const STABLE_TUNNEL_TIME: Duration = Duration::from_secs(15);
 
-/// The failed connects in a row after a tunnel ended (Ombra patch P19). A tunnel that `broke` soon after its connect
-/// adds one. Upstream starts over at each connect, so a path that lets the handshake through and then drops the tunnel
-/// gives a full connect, with its relay race and API tunnel, every few seconds without end. `up_time` includes sleep:
-/// a tunnel that dies while the phone sleeps did not break soon.
 /// A connect error that points at the exit: the WireGuard handshake with it, or its first pong, failed. Errors of the
 /// relay, the API or the network say nothing about the exit.
 fn exit_failed(error: &TunnelConnectError) -> bool {
@@ -652,6 +648,10 @@ fn exit_failed(error: &TunnelConnectError) -> bool {
     )
 }
 
+/// The failed connects in a row after a tunnel ended (Ombra patch P19). A tunnel that `broke` soon after its connect
+/// adds one. Upstream starts over at each connect, so a path that lets the handshake through and then drops the tunnel
+/// gives a full connect, with its relay race and API tunnel, every few seconds without end. `up_time` includes sleep:
+/// a tunnel that dies while the phone sleeps did not break soon.
 fn failures_after_tunnel(failures: u32, broke: bool, up_time: Duration) -> u32 {
     if broke && up_time < STABLE_TUNNEL_TIME {
         failures.saturating_add(1)

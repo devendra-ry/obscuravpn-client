@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission
         android:name="android.permission.FOREGROUND_SERVICE"
         tools:ignore="ForegroundServicesPolicy" />
@@ -22,17 +24,13 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ObscuraVPN">
 
-        <!--
-        `WebView` necessitates aggressive use of `android:configChanges`:
-        https://developer.android.com/develop/ui/compose/quick-guides/content/manage-webview-state
-        -->
         <activity
             android:name=".activities.MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
             android:exported="true"
             android:enabled="true"
             android:launchMode="singleInstance"
-            android:windowSoftInputMode="adjustNothing">
+            android:windowSoftInputMode="adjustResize">
 
             <intent-filter>
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -63,7 +61,6 @@
             android:permission="android.permission.BIND_VPN_SERVICE"
             android:exported="false"
             android:foregroundServiceType="systemExempted"
-            android:process=":vpnservice"
             tools:ignore="ForegroundServicePermission,VpnServicePolicy">
 
             <intent-filter>
@@ -72,11 +69,12 @@
         </service>
 
         <receiver
-            android:name=".ui.JsonFfiBroadcastReceiver"
-            android:exported="false" />
-
-        <meta-data
-            android:name="android.webkit.WebView.MetricsOptOut"
-            android:value="true" />
+            android:name=".services.AutoConnectBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

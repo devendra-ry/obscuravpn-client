@@ -4,6 +4,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.hilt.android)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlinx.serialization)
     alias(libs.plugins.ksp)
 }
@@ -15,8 +16,12 @@ extensions.configure<ApplicationExtension> {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "net.obscura.vpnclientapp"
-        minSdk = 31
+        // Fork build: its own package, so it installs next to the official app (a different signing key cannot
+        // update it). -Pobscura.applicationIdSuffix= (empty) gives the official package name.
+        applicationId =
+            "net.obscura.vpnclientapp" + (providers.gradleProperty("obscura.applicationIdSuffix").orNull ?: ".fork")
+        // Fork build: Android 15 and newer only.
+        minSdk = 35
         targetSdk = 36
         versionCode = project.getVersionCode(project.rootDir)
         versionName = project.getVersionName(project.rootDir)
@@ -27,6 +32,7 @@ extensions.configure<ApplicationExtension> {
     buildFeatures {
         aidl = true
         buildConfig = true
+        compose = true
     }
 
     buildTypes {
@@ -75,12 +81,18 @@ kotlin {
 }
 
 dependencies {
+    implementation(libs.activity.compose)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle)
-    implementation(libs.androidx.webkit)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.foundation)
+    implementation(libs.compose.material3)
+    implementation(libs.compose.ui)
     implementation(libs.hilt.android)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.material)
     implementation(project(":lib:util"))
 

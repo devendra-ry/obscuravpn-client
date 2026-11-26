@@ -5,20 +5,22 @@ import android.app.ActivityManager
 import android.app.Application
 import android.app.ApplicationExitInfo
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
+import android.net.InetAddresses
+import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.PowerManager
 import android.system.OsConstants
-import java.net.NetworkInterface
 import java.util.concurrent.CompletableFuture
 import kotlin.concurrent.Volatile
 import net.obscura.lib.util.Logger
@@ -37,26 +39,7 @@ private fun ApplicationExitInfo.toJson(): JSONObject =
     JSONObject()
         .put("processName", processName)
         .put("pid", pid)
-        .put(
-            "reason",
-            when (reason) {
-                ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
-                ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
-                ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
-                ApplicationExitInfo.REASON_CRASH -> "CRASH"
-                ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
-                ApplicationExitInfo.REASON_ANR -> "ANR"
-                ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
-                ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
-                ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
-                ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
-                ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
-                ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
-                ApplicationExitInfo.REASON_OTHER -> "OTHER"
-                ApplicationExitInfo.REASON_FREEZER -> "FREEZER"
-                else -> "UNKNOWN"
-            } + "($reason)",
-        )
+        .put("reason", exitReasonLabel(reason) + "($reason)")
         .put("status", status)
         .put("importance", importance)
         .put("pssKb", pss)
@@ -64,7 +47,28 @@ private fun ApplicationExitInfo.toJson(): JSONObject =
         .put("timestamp", timestamp)
         .put("description", description ?: JSONObject.NULL)
 
+private fun exitReasonLabel(reason: Int): String =
+    when (reason) {
+        ApplicationExitInfo.REASON_EXIT_SELF -> "EXIT_SELF"
+        ApplicationExitInfo.REASON_SIGNALED -> "SIGNALED"
+        ApplicationExitInfo.REASON_LOW_MEMORY -> "LOW_MEMORY"
+        ApplicationExitInfo.REASON_CRASH -> "CRASH"
+        ApplicationExitInfo.REASON_CRASH_NATIVE -> "CRASH_NATIVE"
+        ApplicationExitInfo.REASON_ANR -> "ANR"
+        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE -> "INITIALIZATION_FAILURE"
+        ApplicationExitInfo.REASON_PERMISSION_CHANGE -> "PERMISSION_CHANGE"
+        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "EXCESSIVE_RESOURCE_USAGE"
+        ApplicationExitInfo.REASON_USER_REQUESTED -> "USER_REQUESTED"
+        ApplicationExitInfo.REASON_USER_STOPPED -> "USER_STOPPED"
+        ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "DEPENDENCY_DIED"
+        ApplicationExitInfo.REASON_OTHER -> "OTHER"
+        ApplicationExitInfo.REASON_FREEZER -> "FREEZER"
+        else -> "UNKNOWN"
+    }
+
 const val PATH_REQUEST_VPN_START = "requestVpnStart"
+
+private const val CONNECT_WAKELOCK_TIMEOUT_MS = 60_000L
 
 @SuppressLint("VpnServicePolicy")
 class ObscuraVpnService : VpnService() {
@@ -73,32 +77,29 @@ class ObscuraVpnService : VpnService() {
     ) : IObscuraVpnService.Stub() {
         override fun stopTunnel() {
             service.log.info("stopTunnel", "Gf6f2lwW")
-            service.stopTunnel()
+            service.stopTunnelFromUser()
         }
 
-        override fun jsonFfi(
-            id: Long,
-            command: String,
-        ) {
+        override fun jsonFfi(id: Long, command: String) {
             val future = CompletableFuture<String>()
             service.rustFfi.jsonFfi(command, future)
             future.handle { value: String?, exception: Throwable? ->
-                try {
-                    service.sendBroadcast(
-                        Intent(service, JsonFfiBroadcastReceiver::class.java).apply {
-                            this.putJsonFfiExtras(id, value, exception)
-                        }
-                    )
-                } catch (e: Throwable) {
-                    service.log.error("failed to broadcast job $id result: $e", messageId = "L74T4QBq", tr = e)
-                }
+                JsonFfiBroadcastReceiver.deliverInProcess(id, value, exception)
             }
         }
+
+        override fun setAndroidSettings(json: String) {
+            val next = jsonConfig.decodeFromString<AndroidVpnSettings>(json)
+            service.updateAndroidSettings(next)
+        }
+
+        override fun getAndroidSettings(): String = jsonConfig.encodeToString(service.androidSettings)
     }
 
     companion object {
         private val instance = java.util.concurrent.atomic.AtomicReference<ObscuraVpnService?>(null)
         private val shutdownHookRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
+        private const val SESSION_NAME = "Obscura VPN"
 
         @androidx.annotation.Keep
         @JvmStatic
@@ -145,27 +146,59 @@ class ObscuraVpnService : VpnService() {
                 null
             }
         }
-    }
 
-    private data class NetworkInterfaceProps(val name: String, val index: Int)
+        @androidx.annotation.Keep
+        @JvmStatic
+        fun ffiStoreWgSecretKey(secretKey: ByteArray): Boolean {
+            val service = instance.get() ?: return false
+            return service.wgKeyVault.store(secretKey)
+        }
+    }
 
     private lateinit var rustFfi: RustFfi
     private lateinit var log: Logger
     private lateinit var notificationManager: NotificationManager
     private lateinit var handler: Handler
+    private lateinit var wgKeyVault: WgKeyVault
+    private lateinit var configKeyVault: ConfigKeyVault
+    private lateinit var settingsStore: AndroidVpnSettingsStore
+    private lateinit var wakeMonitor: WakeMonitor
+    private lateinit var packageMonitor: PackageMonitor
+    private lateinit var restoreStore: VpnRestoreStore
+    private var connectingWakeLock: PowerManager.WakeLock? = null
+
+    @Volatile private var destroyed = false
+    @Volatile private var androidSettings: AndroidVpnSettings = AndroidVpnSettings()
+    @Volatile private var vpnStatus: ManagerCmdOk.GetStatus.VpnStatus? = null
+    @Volatile private var currentNetwork: Network? = null
+    private var reportedNetwork: RustNetwork? = null
 
     private val connectivityManager
         get() = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
-    @Volatile private var vpnStatus: ManagerCmdOk.GetStatus.VpnStatus? = null
-
-    private var currentNetwork: Network? = null
-
     override fun onCreate() {
         super.onCreate()
-
+        destroyed = false
         logNoFfi.info("ObscuraVpnService onCreate entry")
-        rustFfi = RustFfi(this, "obscura.net/android/${BuildConfig.VERSION_NAME}")
+        val vaultDir = noBackupFilesDir
+        wgKeyVault = WgKeyVault(vaultDir)
+        configKeyVault = ConfigKeyVault(vaultDir)
+        settingsStore = AndroidVpnSettingsStore(vaultDir)
+        restoreStore = VpnRestoreStore(this)
+        androidSettings = settingsStore.load()
+        connectingWakeLock =
+            getSystemService(PowerManager::class.java)
+                ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$packageName:connect")
+                ?.apply { setReferenceCounted(false) }
+
+        rustFfi =
+            RustFfi(
+                this,
+                "obscura.net/android/${BuildConfig.VERSION_NAME}",
+                wgKeyVault.load(),
+                configKeyVault.loadOrCreate(),
+                androidSettings.persistLogs,
+            )
         log = rustFfi.logger(logNoFfi.tag)
 
         if (instance.getAndSet(this) != null) {
@@ -173,55 +206,82 @@ class ObscuraVpnService : VpnService() {
         }
 
         log.info("onCreate", "vqiGa01f")
-
         logLastExitReason()
-
-        if (shutdownHookRegistered.compareAndSet(false, true)) {
-            Runtime.getRuntime()
-                .addShutdownHook(
-                    Thread {
-                        val stacks =
-                            Thread.getAllStackTraces().entries.joinToString("\n\n") { (thread, stack) ->
-                                "${thread.name} (${thread.state})\n" + stack.joinToString("\n") { "    at $it" }
-                            }
-                        log.error(
-                            "shutdown hook fired, System.exit in progress, all thread stacks:\n$stacks",
-                            "aJx0R5wq",
-                        )
-                        rustFfi.flushAndStopPersistedLog()
-                    },
-                )
-        }
+        registerShutdownHookIfNeeded()
 
         handler = Handler(Looper.getMainLooper())
+        wakeMonitor = WakeMonitor(this) { rustFfi.wake() }
+        packageMonitor = PackageMonitor(this, { androidSettings }) { refreshOsNetworkConfig() }
+        packageMonitor.setEnabled(androidSettings.splitMode != SplitMode.Off)
 
+        registerNetworkCallback()
+        notificationManager = NotificationManager(this)
+        loadStatus(null)
+    }
+
+    private fun registerShutdownHookIfNeeded() {
+        if (!shutdownHookRegistered.compareAndSet(false, true)) return
+        Runtime.getRuntime()
+            .addShutdownHook(
+                Thread {
+                    val stacks =
+                        Thread.getAllStackTraces().entries.joinToString("\n\n") { (thread, stack) ->
+                            "${thread.name} (${thread.state})\n" + stack.joinToString("\n") { "    at $it" }
+                        }
+                    log.error(
+                        "shutdown hook fired, System.exit in progress, all thread stacks:\n$stacks",
+                        "aJx0R5wq",
+                    )
+                    rustFfi.flushAndStopPersistedLog()
+                },
+            )
+    }
+
+    private fun registerNetworkCallback() {
         val networkRequest =
             NetworkRequest.Builder()
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
                 .build()
-        val service = this
         connectivityManager.registerBestMatchingNetworkCallback(
             networkRequest,
             object : NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    service.currentNetwork = network
-                    service.updateInterface(network)
+                    currentNetwork = network
+                    setUnderlyingNetworks(arrayOf(network))
+                    connectivityManager.getLinkProperties(network)?.let { updateInterface(network, it) }
+                }
+
+                override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                    if (network == currentNetwork) {
+                        updateInterface(network, linkProperties)
+                    }
                 }
 
                 override fun onLost(network: Network) {
-                    if (network == service.currentNetwork) {
-                        service.currentNetwork = null
-                        service.updateInterface(null)
+                    if (network == currentNetwork) {
+                        currentNetwork = null
+                        setUnderlyingNetworks(emptyArray())
+                        updateInterface(null, null)
                     }
                 }
             },
             handler,
         )
+        reportDefaultNetwork()
+    }
 
-        this.notificationManager = NotificationManager(this)
-
-        loadStatus(null)
+    private fun reportDefaultNetwork() {
+        val network = connectivityManager.activeNetwork ?: return
+        val caps = connectivityManager.getNetworkCapabilities(network) ?: return
+        val linkProps = connectivityManager.getLinkProperties(network) ?: return
+        val usable =
+            caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+        if (!usable) return
+        currentNetwork = network
+        setUnderlyingNetworks(arrayOf(network))
+        updateInterface(network, linkProps)
     }
 
     private fun logLastExitReason() {
@@ -240,22 +300,14 @@ class ObscuraVpnService : VpnService() {
 
     private fun promoteToForeground(prepareResult: PrepareResult): Result<Unit> =
         runCatching {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    // We only have permission to start a foreground service once our VPN profile has been created.
-                    if (prepareResult == PrepareResult.Ready) {
-                        this.startForeground(
-                            NotificationManager.NOTIFICATION_ID,
-                            this.notificationManager.buildNotification(this.vpnStatus, prepareResult),
-                            ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED,
-                        )
-                    } else {
-                        throw RuntimeException("VPN not prepared")
-                    }
-                } else {
+                if (prepareResult == PrepareResult.Ready) {
                     this.startForeground(
                         NotificationManager.NOTIFICATION_ID,
                         this.notificationManager.buildNotification(this.vpnStatus, prepareResult),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED,
                     )
+                } else {
+                    throw RuntimeException("VPN not prepared")
                 }
             }
             .onFailure {
@@ -265,32 +317,43 @@ class ObscuraVpnService : VpnService() {
                 )
             }
 
-    override fun onStartCommand(
-        intent: Intent?,
-        flags: Int,
-        startId: Int,
-    ): Int {
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         log.info("onStartCommand $intent ${intent?.action} $flags $startId", "C9rsG0uh")
         val prepareResult = this.prepareVpnService()
         val isForeground = this.promoteToForeground(prepareResult).isSuccess
         when (intent?.action) {
-            ACTION_START_TUNNEL -> if (isForeground) this.startTunnel(intent.getStartTunnelExtras())
-            // `isForeground` is expected to always be true while disconnecting, but it's not a requirement.
-            ACTION_STOP_TUNNEL -> this.stopTunnel()
+            ACTION_START_TUNNEL -> startWithArgs(intent.getStartTunnelExtras(), isForeground)
+            ACTION_STOP_TUNNEL -> {
+                stopTunnelFromUser()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelfResult(startId)
+                return START_NOT_STICKY
+            }
             SERVICE_INTERFACE -> {
                 log.info("onStartCommand was system-initiated", "sktWFegO")
-                if (isForeground) this.startTunnel(null)
+                startWithArgs(restoreStore.lastTunnelArgs, isForeground)
+            }
+            null -> {
+                log.info("onStartCommand restored after process kill", "pR7mKx2q")
+                if (isForeground && restoreStore.wantConnected) {
+                    startTunnel(restoreStore.lastTunnelArgs)
+                } else {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelfResult(startId)
+                    return START_NOT_STICKY
+                }
             }
         }
         if (!isForeground) {
-            // This branch should only occur if the notification action is stale, which can happen if the user revokes
-            // VPN permissions while disconnected.
             this.notificationManager.notify(this.vpnStatus, prepareResult)
-            // If this was started using `startForegroundService`/`getForegroundService`, not calling `startForeground`
-            // will still result in an ANR, but `START_STICKY` will recreate the service.
             this.stopSelfResult(startId)
         }
         return START_STICKY
+    }
+
+    private fun startWithArgs(args: String?, isForeground: Boolean) {
+        restoreStore.setWantConnected(true, args)
+        if (isForeground) startTunnel(args)
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -299,7 +362,6 @@ class ObscuraVpnService : VpnService() {
             log.info("onBind was system-initiated", "4olaayXf")
             this.promoteToForeground(PrepareResult.Ready)
         }
-        // The default binder is what calls `onRevoke`, and will only be non-null if the action is `SERVICE_INTERFACE`.
         return super.onBind(intent) ?: Binder(this)
     }
 
@@ -322,48 +384,83 @@ class ObscuraVpnService : VpnService() {
     }
 
     private fun onStatusUpdated(status: ManagerCmdOk.GetStatus) {
+        if (destroyed) return
         log.info("status updated $status", "xXx7PxdD")
         this.vpnStatus = status.vpnStatus
+        val loggedIn = status.accountId != null && !status.inNewAccountFlow
+        restoreStore.setAutoConnect(status.autoConnect && loggedIn)
+        if (!loggedIn) {
+            restoreStore.setWantConnected(false, null)
+        }
+        val isConnecting = status.vpnStatus is ManagerCmdOk.GetStatus.VpnStatus.Connecting
+        updateConnectWakeLock(isConnecting)
+        val active = status.vpnStatus !is ManagerCmdOk.GetStatus.VpnStatus.Disconnected
+        handler.post { wakeMonitor.setEnabled(active) }
         this.notificationManager.notify(
             status.vpnStatus,
-            if (status.vpnStatus == ManagerCmdOk.GetStatus.VpnStatus.Disconnected) this.prepareVpnService()
-            else PrepareResult.Ready,
+            if (!active) this.prepareVpnService() else PrepareResult.Ready,
         )
         this.loadStatus(status.version)
     }
 
-    // This will only be called if the system (`SERVICE_INTERFACE`) is bound to this service.
-    // Unfortunately, the system unbinds after disconnecting the VPN, so this method will only be called if there's an
-    // active connection when VPN permissions are revoked.
+    private fun updateConnectWakeLock(connecting: Boolean) {
+        val wl = connectingWakeLock ?: return
+        if (connecting) {
+            if (!wl.isHeld) wl.acquire(CONNECT_WAKELOCK_TIMEOUT_MS)
+        } else if (wl.isHeld) {
+            wl.release()
+        }
+    }
+
     override fun onRevoke() {
         log.info("onRevoke", "V3qS5kil")
-        this.stopTunnel()
+        stopTunnelFromUser()
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onRevoke()
     }
 
     override fun onDestroy() {
+        destroyed = true
+        updateConnectWakeLock(false)
         super.onDestroy()
         if (instance.getAndSet(null) == null) {
             log.error("instance already cleared", "bQ5wKr8d")
         }
+        wakeMonitor.setEnabled(false)
+        packageMonitor.setEnabled(false)
         log.info("onDestroy", "yNLRpqaN")
         stopTunnel()
     }
 
     private fun loadStatus(knownVersion: String?) {
+        if (destroyed) return
         log.info("load status $knownVersion", "8pXipD8h")
-
         CompletableFuture<String>().also {
             rustFfi.jsonFfi(
                 jsonConfig.encodeToString(ManagerCmd.GetStatus(knownVersion)),
                 it,
             )
-
             it.handle { data, tr ->
                 log.info("getStatus completed $data", "oiAyY4gh", tr)
-                data?.let { data -> onStatusUpdated(jsonConfig.decodeFromString(data)) }
+                data?.let { payload -> onStatusUpdated(jsonConfig.decodeFromString(payload)) }
             }
         }
+    }
+
+    private fun updateAndroidSettings(next: AndroidVpnSettings) {
+        val old = androidSettings
+        androidSettings = next
+        settingsStore.save(next)
+        handler.post { packageMonitor.setEnabled(next.splitMode != SplitMode.Off) }
+        val tunChanged =
+            old.customDns != next.customDns || old.splitMode != next.splitMode || old.splitApps != next.splitApps
+        if (tunChanged) {
+            refreshOsNetworkConfig()
+        }
+    }
+
+    private fun refreshOsNetworkConfig() {
+        CompletableFuture<String>().also { rustFfi.jsonFfi("""{"refreshOsNetworkConfig":{}}""", it) }
     }
 
     private fun setTunnelArgs(exit: String?, active: Boolean?) {
@@ -371,13 +468,18 @@ class ObscuraVpnService : VpnService() {
             rustFfi.jsonFfi(
                 jsonConfig.encodeToString(
                     ManagerCmd.SetTunnelArgs(
-                        args = exit?.let { exit -> jsonConfig.decodeFromString(exit) },
-                        active,
+                        args = exit?.let { raw -> jsonConfig.decodeFromString(raw) },
+                        active = active,
                     ),
                 ),
                 it,
             )
         }
+    }
+
+    private fun stopTunnelFromUser() {
+        restoreStore.setWantConnected(false, null)
+        stopTunnel()
     }
 
     private fun stopTunnel() {
@@ -390,76 +492,71 @@ class ObscuraVpnService : VpnService() {
 
     private fun applyNetworkConfig(networkConfig: OsNetworkConfig): ParcelFileDescriptor? {
         log.info("applying network config", "q9cnmRY0")
-
-        val pfd =
-            Builder()
-                .apply {
-                    // always disallow current app so it doesn't get routed through the VPN
-                    addDisallowedApplication(applicationInfo.packageName)
-
-                    setMtu(networkConfig.mtu)
-
-                    // Inherit meteredness from the underlying network (set via setUnderlyingNetworks).
-                    // Without this, VpnService.Builder defaults to always marking the VPN as metered,
-                    // regardless of the underlying network.
-                    setMetered(false)
-
-                    // useSystemDns is always false on Android because no UI surface writes it.
-                    //
-                    // System-wide Private DNS overrides anything we set.
-                    // Mullvad has the same problem, no fix without WRITE_SECURE_SETTINGS. UI warns about it.
-                    // https://github.com/mullvad/mullvadvpn-app/issues/5009
-                    if (!networkConfig.useSystemDns) {
-                        networkConfig.dns.forEach { addDnsServer(it) }
-                    }
-
-                    networkConfig.ipv4.split("/").let { addAddress(it[0], if (it.size == 2) it[1].toInt() else 32) }
-
-                    networkConfig.ipv6.split("/").let { addAddress(it[0], if (it.size == 2) it[1].toInt() else 128) }
-
-                    networkConfig.routes.forEach { route -> addRoute(route.address, route.prefix) }
-
-                    allowFamily(OsConstants.AF_INET)
-                    allowFamily(OsConstants.AF_INET6)
-                }
-                .establish()
-
+        val plan =
+            TunPlan.of(
+                config = networkConfig,
+                settings = androidSettings,
+                ownPackage = packageName,
+                isUsableDns = ::isUsableDns,
+                isInstalled = ::isInstalled,
+            )
+        val pfd = buildVpnInterface(plan).establish()
         if (pfd == null) {
             log.error("VpnService.Builder.establish() returned null", "tR7uWe2x")
         }
         return pfd
     }
 
-    private fun getNetworkInterfaceProps(network: Network?): NetworkInterfaceProps? {
-        val network = network ?: return null
-        val linkProperties =
-            this.connectivityManager.getLinkProperties(network)
-                ?: run {
-                    log.error("failed to get link properties for network: $network", "W0JKaOGP")
-                    return null
-                }
-        val name =
-            linkProperties.interfaceName
-                ?: run {
-                    log.error("network has no interface name: $network", "ukjpaGLl")
-                    return null
-                }
-        val ni =
-            NetworkInterface.getByName(name)
-                ?: run {
-                    log.error("failed to get interface by name: $name", "JvEt0GtR")
-                    return null
-                }
-        log.info("setting network interface: $name ${ni.index}", "pOsKRATd")
-        return NetworkInterfaceProps(name, ni.index)
+    private fun buildVpnInterface(plan: TunPlan): Builder =
+        Builder().apply {
+            setSession(SESSION_NAME)
+            setMtu(plan.mtu)
+            setMetered(false)
+            setBlocking(false)
+            plan.addresses.forEach { addAddress(it.address, it.prefix) }
+            plan.routes.forEach { addRoute(it.address, it.prefix) }
+            plan.dnsServers.forEach { addDnsServer(it) }
+            currentNetwork?.let { setUnderlyingNetworks(arrayOf(it)) }
+            allowFamily(OsConstants.AF_INET)
+            allowFamily(OsConstants.AF_INET6)
+            when (val apps = plan.apps) {
+                is AppScope.AllExcept -> apps.packages.forEach { addDisallowedApplication(it) }
+                is AppScope.Only -> apps.packages.forEach { allowApp(this, it) }
+            }
+        }
+
+    private fun allowApp(builder: Builder, packageName: String) {
+        try {
+            builder.addAllowedApplication(packageName)
+        } catch (_: PackageManager.NameNotFoundException) {
+            log.warn("allowed app skipped: $packageName")
+        }
     }
 
-    private fun updateInterface(network: Network?) {
-        log.info("network interface changed: $network", "crWriIOe")
-        this.setUnderlyingNetworks(if (network != null) arrayOf(network) else emptyArray())
-        val networkInterface = this.getNetworkInterfaceProps(network)
-        if (networkInterface != null) {
-            rustFfi.setNetworkInterface(networkInterface.name, networkInterface.index)
+    private fun isUsableDns(value: String): Boolean =
+        InetAddresses.isNumericAddress(value) &&
+            InetAddresses.parseNumericAddress(value).let { !it.isLoopbackAddress && !it.isAnyLocalAddress }
+
+    private fun isInstalled(packageName: String): Boolean =
+        try {
+            packageManager.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+            true
+        } catch (_: PackageManager.NameNotFoundException) {
+            false
+        }
+
+    private fun updateInterface(network: Network?, linkProperties: LinkProperties?) {
+        val next =
+            if (network != null && linkProperties != null) {
+                readRustNetwork(network.networkHandle, linkProperties)
+            } else {
+                null
+            }
+        if (next == reportedNetwork) return
+        reportedNetwork = next
+        log.info("network interface changed: $next", "crWriIOe")
+        if (next != null) {
+            rustFfi.setNetworkInterface(next.name, next.index, next.networkHandle, next.mtuHint)
         } else {
             rustFfi.unsetNetworkInterface()
         }

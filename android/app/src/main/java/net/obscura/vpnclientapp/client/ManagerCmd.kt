@@ -72,7 +72,8 @@ sealed interface ManagerCmd {
     @KeepGeneratedSerializer
     @Serializable(with = SetTunnelArgs.Serializer::class)
     data class SetTunnelArgs(
-        val args: Map<String, JsonObject>? = null,
+        // Any JSON object: the fork adds string and number fields (mode, udpMtu) next to the exit and relay selectors.
+        val args: JsonObject? = null,
         val active: Boolean? = null,
     ) : ManagerCmd {
         internal object Serializer :

@@ -5,7 +5,6 @@ import android.app.Activity.RESULT_CANCELED
 import android.app.Activity.RESULT_OK
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
@@ -54,9 +53,8 @@ class VpnPermissionRequestManager @Inject constructor(private val activity: Frag
 
     private fun requestNotificationPermission() {
         if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(this.activity, Manifest.permission.POST_NOTIFICATIONS) !=
-                    PackageManager.PERMISSION_GRANTED
+            ContextCompat.checkSelfPermission(this.activity, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
         ) {
             this.notificationPermissionRequestLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }

@@ -8,6 +8,7 @@ import kotlin.random.Random
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.completeWith
 import net.obscura.lib.util.Logger
+import net.obscura.vpnclientapp.client.ErrorCodeException
 import net.obscura.vpnclientapp.services.IObscuraVpnService
 import net.obscura.vpnclientapp.services.getJsonFfiExtras
 
@@ -35,15 +36,22 @@ class JsonFfiBroadcastReceiver : BroadcastReceiver() {
                     job.completeExceptionally(e)
                 }
             }
+
+        internal fun deliverInProcess(id: Long, value: String?, exception: Throwable?) {
+            val result =
+                if (value != null) {
+                    Result.success(value)
+                } else {
+                    val error = (exception as? ErrorCodeException) ?: ErrorCodeException.other()
+                    Result.failure(error)
+                }
+            waiting.remove(id)?.completeWith(result)
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
         val args = intent.getJsonFfiExtras()
         waiting.remove(args.id)?.completeWith(args.result)
-            ?: run {
-                log.error(
-                    "job ${args.id} already completed or never registered (may be stale response from earlier process)"
-                )
-            }
+            ?: log.error("job ${args.id} already completed or never registered")
     }
 }

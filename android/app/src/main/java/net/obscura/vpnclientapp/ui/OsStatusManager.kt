@@ -8,13 +8,16 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.completeWith
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import net.obscura.lib.util.Logger
 import net.obscura.vpnclientapp.BuildConfig
 import net.obscura.vpnclientapp.client.jsonConfig
 
 private val log = Logger(OsStatusManager::class)
 
-@Singleton // Prevents loss of state on activity destruction
+@Singleton
 class OsStatusManager @Inject constructor(@ApplicationContext context: Context) :
     NetworkStatusObserver.Callback, PrivateDnsObserver.Callback {
     data class State(
@@ -33,10 +36,23 @@ class OsStatusManager @Inject constructor(@ApplicationContext context: Context) 
         var vpnStatus: OsStatus.OsVpnStatus = OsStatus.OsVpnStatus.Disconnected,
     )
 
+    data class Snapshot(
+        val internetAvailable: Boolean = false,
+        val privateDnsActive: Boolean = false,
+        val playBilling: Boolean = false,
+        val colorScheme: OsStatus.ColorScheme = OsStatus.ColorScheme.Auto,
+        val navigationView: OsStatus.NavigationView? = null,
+        val vpnStatus: OsStatus.OsVpnStatus = OsStatus.OsVpnStatus.Disconnected,
+        val debugInProgress: Boolean = false,
+        val latestDebugBundlePath: String? = null,
+    )
+
     private data class VersionedState(val version: UUID, val state: State)
 
     private var current = VersionedState(UUID.randomUUID(), State())
     private val waiting = ArrayList<CompletableDeferred<String>>()
+    private val _snapshot = MutableStateFlow(Snapshot())
+    val snapshot: StateFlow<Snapshot> = _snapshot.asStateFlow()
 
     init {
         NetworkStatusObserver(context, this)
@@ -56,13 +72,25 @@ class OsStatusManager @Inject constructor(@ApplicationContext context: Context) 
         val version = UUID.randomUUID()
         val result = runCatching {
             block(this.current.state)
+            val s = this.current.state
+            _snapshot.value =
+                Snapshot(
+                    internetAvailable = s.internetAvailable,
+                    privateDnsActive = s.privateDnsActive,
+                    playBilling = s.playBilling,
+                    colorScheme = s.colorScheme,
+                    navigationView = s.navigationView,
+                    vpnStatus = s.vpnStatus,
+                    debugInProgress = s.debugBundleStatus.inProgress == true,
+                    latestDebugBundlePath = s.debugBundleStatus.latestPath,
+                )
             OsStatus(
                     version = version.toString(),
-                    internetAvailable = this.current.state.internetAvailable,
-                    osVpnStatus = this.current.state.vpnStatus,
+                    internetAvailable = s.internetAvailable,
+                    osVpnStatus = s.vpnStatus,
                     srcVersion = BuildConfig.VERSION_NAME,
-                    navigationView = this.current.state.navigationView,
-                    colorScheme = this.current.state.colorScheme,
+                    navigationView = s.navigationView,
+                    colorScheme = s.colorScheme,
                     updaterStatus =
                         OsStatus.UpdaterStatus(
                             type = "uninitiated",
@@ -70,11 +98,11 @@ class OsStatusManager @Inject constructor(@ApplicationContext context: Context) 
                             error = null,
                             errorCode = null,
                         ),
-                    debugBundleStatus = this.current.state.debugBundleStatus,
+                    debugBundleStatus = s.debugBundleStatus,
                     canSendMail = true,
                     loginItemStatus = null,
-                    playBilling = this.current.state.playBilling,
-                    privateDnsActive = this.current.state.privateDnsActive,
+                    playBilling = s.playBilling,
+                    privateDnsActive = s.privateDnsActive,
                 )
                 .let { jsonConfig.encodeToString(it) }
         }

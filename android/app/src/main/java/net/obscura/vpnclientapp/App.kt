@@ -1,7 +1,6 @@
 package net.obscura.vpnclientapp
 
 import android.app.Application
-import android.os.Build
 import android.os.StrictMode
 import android.os.strictmode.DiskReadViolation
 import android.os.strictmode.ExplicitGcViolation
@@ -13,6 +12,7 @@ import kotlinx.coroutines.asExecutor
 import net.obscura.lib.util.Logger
 import net.obscura.vpnclientapp.activities.MainActivity
 import net.obscura.vpnclientapp.client.ObscuraLibrary
+import net.obscura.vpnclientapp.services.ObscuraVpnService
 
 private val log = Logger(App::class)
 
@@ -36,18 +36,20 @@ class App : Application() {
                                 }
                         )
                             return@penaltyListener
-                        // The VPN service creation intentionally depends on the native library.
+                        // The VPN service creation intentionally depends on the native library & keystore setup.
                         if (
                             violation is DiskReadViolation &&
-                                violation.stackTrace.any { it.className == ObscuraLibrary::class.java.name }
+                                violation.stackTrace.any {
+                                    it.className == ObscuraLibrary::class.java.name ||
+                                        it.className == ObscuraVpnService::class.java.name
+                                }
                         )
                             return@penaltyListener
                         // Android appears to violate its own strict mode.
                         // Also observed by this project:
                         // https://github.com/nice-devone/nice-cxone-mobile-sdk-android/blob/67d07af4555a03ea63537dd2085485ad8c2f0df3/store/src/main/kotlin/com/nice/cxonechat/sample/StrictModePolicy.kt#L251-L263
                         if (
-                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE &&
-                                violation is ExplicitGcViolation &&
+                            violation is ExplicitGcViolation &&
                                 violation.stackTrace.any {
                                     it.className == "android.app.ActivityThread" &&
                                         it.methodName == "performDestroyActivity"

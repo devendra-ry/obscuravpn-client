@@ -6,14 +6,12 @@ import android.content.ServiceConnection
 import android.content.res.Configuration
 import android.os.Bundle
 import android.os.IBinder
-import androidx.activity.addCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.core.view.WindowCompat
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import net.obscura.lib.util.Logger
-import net.obscura.vpnclientapp.R
 import net.obscura.vpnclientapp.services.IObscuraVpnService
 import net.obscura.vpnclientapp.services.bindVpnService
 import net.obscura.vpnclientapp.services.unbindVpnService
@@ -33,12 +31,14 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
     lateinit var preferencesManager: PreferencesManager
     @Inject lateinit var vpnPermissionRequestManager: VpnPermissionRequestManager
 
-    private lateinit var ui: ObscuraUI
+    private val ui = ObscuraUI()
 
     private var isFreshLaunch: Boolean = true
     private var isVpnServiceBound: Boolean = false
 
-    private fun handleIntent(intent: Intent?) = intent?.data?.let { uri -> this.ui.handleObscuraUri(this, uri) }
+    private fun handleIntent(intent: Intent?) {
+        intent?.data?.let { uri -> this.ui.handleObscuraUri(uri, this.osStatusManager) }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         log.trace("onCreate")
@@ -49,20 +49,6 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
         // Edge-to-edge is the future for Android
         // https://developer.android.com/develop/ui/views/layout/edge-to-edge
         WindowCompat.enableEdgeToEdge(this.window)
-
-        setContentView(R.layout.activity_main)
-
-        ui = findViewById(R.id.ui)
-
-        onBackPressedDispatcher.addCallback {
-            if (ui.canGoBack) {
-                ui.goBack()
-            } else {
-                isEnabled = false
-                onBackPressedDispatcher.onBackPressed()
-                isEnabled = true
-            }
-        }
 
         this.isVpnServiceBound = this.bindVpnService(this)
         this.preferencesManager =
@@ -77,6 +63,7 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
                 )
                 this@MainActivity.osStatusManager.update { this.colorScheme = preferences.colorScheme }
             }
+        this.ui.attachContent(this, this.osStatusManager, this.preferencesManager)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -103,9 +90,7 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
         if (this.isVpnServiceBound) {
             this.unbindVpnService(this)
         }
-        if (::ui.isInitialized) {
-            this.ui.onDestroy()
-        }
+        this.ui.onDestroy()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -121,6 +106,7 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
             IObscuraVpnService.Stub.asInterface(service),
             this,
             this.osStatusManager,
+            this.preferencesManager,
         )
         // `getIntent` is preserved across activity recreation.
         if (this.isFreshLaunch) this.handleIntent(this.intent)

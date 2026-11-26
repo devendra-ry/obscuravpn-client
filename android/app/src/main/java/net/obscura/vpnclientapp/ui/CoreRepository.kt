@@ -1,0 +1,377 @@
+package net.obscura.vpnclientapp.ui
+
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.serializer
+import net.obscura.lib.util.Logger
+import net.obscura.vpnclientapp.activities.MainActivity
+import net.obscura.vpnclientapp.client.AccountIdUtils
+import net.obscura.vpnclientapp.client.CachedList
+import net.obscura.vpnclientapp.client.CoreStatus
+import net.obscura.vpnclientapp.client.CoreVpnStatus
+import net.obscura.vpnclientapp.client.DnsContentBlock
+import net.obscura.vpnclientapp.client.ErrorCodeException
+import net.obscura.vpnclientapp.client.ExitSelector
+import net.obscura.vpnclientapp.client.ManagerCmd
+import net.obscura.vpnclientapp.client.ManagerCmdOk
+import net.obscura.vpnclientapp.client.OneExit
+import net.obscura.vpnclientapp.client.OneRelay
+import net.obscura.vpnclientapp.client.PinnedLocation
+import net.obscura.vpnclientapp.client.RelaySelector
+import net.obscura.vpnclientapp.client.ServiceStatusOutput
+import net.obscura.vpnclientapp.client.TrafficStats
+import net.obscura.vpnclientapp.client.TunnelArgs
+import net.obscura.vpnclientapp.client.jsonConfig
+import net.obscura.vpnclientapp.services.AndroidVpnSettings
+import net.obscura.vpnclientapp.services.IObscuraVpnService
+
+private val log = Logger(CoreRepository::class)
+
+sealed interface ListLoadState<out T> {
+    data object Loading : ListLoadState<Nothing>
+
+    data class Ready<T>(val items: List<T>) : ListLoadState<T>
+
+    data class Error(val code: String) : ListLoadState<Nothing>
+}
+
+class CoreRepository(
+    private val binder: IObscuraVpnService,
+    private val activity: MainActivity,
+    private val osStatusManager: OsStatusManager,
+    private val isFreshLaunch: Boolean,
+) {
+    private val _status = MutableStateFlow<CoreStatus?>(null)
+    val status: StateFlow<CoreStatus?> = _status.asStateFlow()
+
+    private val _exits = MutableStateFlow<ListLoadState<OneExit>>(ListLoadState.Loading)
+    val exits: StateFlow<ListLoadState<OneExit>> = _exits.asStateFlow()
+
+    private val _relays = MutableStateFlow<ListLoadState<OneRelay>>(ListLoadState.Loading)
+    val relays: StateFlow<ListLoadState<OneRelay>> = _relays.asStateFlow()
+
+    private val _trafficStats = MutableStateFlow<TrafficStats?>(null)
+    val trafficStats: StateFlow<TrafficStats?> = _trafficStats.asStateFlow()
+
+    private val _androidSettings = MutableStateFlow(AndroidVpnSettings())
+    val androidSettings: StateFlow<AndroidVpnSettings> = _androidSettings.asStateFlow()
+
+    private val _serviceStatus = MutableStateFlow<ServiceStatusOutput?>(null)
+    val serviceStatus: StateFlow<ServiceStatusOutput?> = _serviceStatus.asStateFlow()
+
+    private val jobs = ArrayList<Job>()
+    private var autoConnectEligible = isFreshLaunch
+
+    fun start(owner: LifecycleOwner) {
+        val scope = owner.lifecycleScope
+        loadAndroidSettings()
+        jobs += launchStatusLoop(owner, scope)
+        jobs += launchExitListLoop(owner, scope)
+        jobs += launchRelayListLoop(owner, scope)
+        jobs += launchStatsLoop(owner, scope)
+        jobs += launchPurchaseUploader(owner, scope)
+        jobs += scope.launch { refreshServiceStatus() }
+    }
+
+    fun stop() {
+        jobs.forEach { it.cancel() }
+        jobs.clear()
+    }
+
+    private fun loadAndroidSettings() {
+        runCatching { jsonConfig.decodeFromString<AndroidVpnSettings>(binder.getAndroidSettings()) }
+            .onSuccess { _androidSettings.value = it }
+            .onFailure { log.warn("failed to read android settings: ${it.message}") }
+    }
+
+    private fun launchStatusLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
+        scope.launch {
+            owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var knownVersion: String? = null
+                while (isActive) {
+                    runCatching {
+                            val raw =
+                                invokeFfi(
+                                    """{"getStatus":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
+                                    null,
+                                )
+                            val next = jsonConfig.decodeFromString<CoreStatus>(raw)
+                            knownVersion = next.version
+                            _status.value = next
+                            publishOsVpnStatus(next.vpnStatus)
+                            maybeAutoConnect(next)
+                        }
+                        .onFailure { e ->
+                            if (e is CancellationException) throw e
+                            log.error("status loop error: ${e.message}")
+                            delay(500.milliseconds)
+                        }
+                    delay(10.milliseconds)
+                }
+            }
+        }
+
+    private fun launchExitListLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
+        scope.launch {
+            owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var knownVersion: String? = null
+                while (isActive) {
+                    runCatching {
+                            val raw =
+                                invokeFfi(
+                                    """{"getExitList":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
+                                    null,
+                                )
+                            val list = jsonConfig.decodeFromString<CachedList<OneExit>>(raw)
+                            knownVersion = list.version
+                            _exits.value = ListLoadState.Ready(list.value)
+                        }
+                        .onFailure { e ->
+                            if (e is CancellationException) throw e
+                            if (_exits.value is ListLoadState.Loading) {
+                                _exits.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
+                            }
+                            delay(3.seconds)
+                        }
+                    delay(50.milliseconds)
+                }
+            }
+        }
+
+    private fun launchRelayListLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
+        scope.launch {
+            owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                var knownVersion: String? = null
+                while (isActive) {
+                    runCatching {
+                            val ver = knownVersion?.let { "\"$it\"" } ?: "null"
+                            val raw = invokeFfi("""{"getRelayList":{"knownVersion":$ver}}""", null)
+                            val list = jsonConfig.decodeFromString<CachedList<OneRelay>>(raw)
+                            knownVersion = list.version
+                            _relays.value = ListLoadState.Ready(list.value)
+                        }
+                        .onFailure { e ->
+                            if (e is CancellationException) throw e
+                            if (_relays.value is ListLoadState.Loading) {
+                                _relays.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
+                            }
+                            delay(3.seconds)
+                        }
+                    delay(50.milliseconds)
+                }
+            }
+        }
+
+    private fun launchStatsLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
+        scope.launch {
+            owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                while (isActive) {
+                    if (_status.value?.vpnStatus?.connected != null) {
+                        runCatching {
+                            val raw = invokeFfi("""{"getTrafficStats":{}}""", 5_000L)
+                            _trafficStats.value = jsonConfig.decodeFromString<TrafficStats>(raw)
+                        }
+                    } else {
+                        _trafficStats.value = null
+                    }
+                    delay(1.seconds)
+                }
+            }
+        }
+
+    private fun launchPurchaseUploader(owner: LifecycleOwner, scope: CoroutineScope): Job =
+        scope.launch {
+            owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                val purchaseTokens = activity.billingFacade.fetchPurchaseTokens() ?: return@repeatOnLifecycle
+                for (token in purchaseTokens) {
+                    runCatching { uploadPurchaseToken(binder, token, null) }
+                }
+            }
+        }
+
+    private fun publishOsVpnStatus(vpnStatus: CoreVpnStatus) {
+        val osState =
+            when {
+                vpnStatus.connected != null -> OsStatus.OsVpnStatus.Connected
+                vpnStatus.connecting != null -> OsStatus.OsVpnStatus.Connecting
+                else -> OsStatus.OsVpnStatus.Disconnected
+            }
+        osStatusManager.update { this.vpnStatus = osState }
+    }
+
+    private suspend fun maybeAutoConnect(status: CoreStatus) {
+        val shouldAutoConnect =
+            autoConnectEligible &&
+                status.autoConnect &&
+                status.accountId != null &&
+                !status.inNewAccountFlow &&
+                status.vpnStatus.disconnected != null
+        autoConnectEligible = false
+        if (shouldAutoConnect) {
+            activity.vpnPermissionRequestManager.requestVpnStart(null)
+        }
+    }
+
+    suspend fun invokeFfi(cmdJson: String, timeoutMs: Long? = 15_000L): String {
+        val deferred = JsonFfiBroadcastReceiver.waitForResponse(binder, cmdJson)
+        return if (timeoutMs != null) {
+            withTimeout(timeoutMs) { deferred.await() }
+        } else {
+            deferred.await()
+        }
+    }
+
+    suspend fun connect(exit: ExitSelector? = null, relay: RelaySelector? = null): Result<Unit> {
+        val stored = _status.value?.tunnelArgs ?: TunnelArgs()
+        val target = stored.copy(exit = exit ?: stored.exit, relay = relay ?: stored.relay)
+        val argsJson = jsonConfig.encodeToString(target)
+        return activity.vpnPermissionRequestManager.requestVpnStart(argsJson)
+    }
+
+    fun disconnect() {
+        runCatching { binder.stopTunnel() }
+    }
+
+    suspend fun updateTunnelArgs(args: TunnelArgs) {
+        val json =
+            jsonConfig.encodeToString(
+                ManagerCmd.SetTunnelArgs(
+                    args = jsonConfig.decodeFromString(jsonConfig.encodeToString(args)),
+                    active = null,
+                )
+            )
+        invokeFfi(json)
+    }
+
+    suspend fun setWgKeyMaxAge(secs: Long) {
+        invokeFfi("""{"setWgKeyMaxAge":{"secs":$secs}}""")
+    }
+
+    suspend fun setAutoConnect(enable: Boolean) {
+        invokeFfi("""{"setAutoConnect":{"enable":$enable}}""")
+    }
+
+    suspend fun setDnsContentBlock(block: DnsContentBlock) {
+        invokeFfi("""{"setDnsContentBlock":{"value":${jsonConfig.encodeToString(block)}}}""")
+    }
+
+    suspend fun setLocalNetworkAccess(enable: Boolean) {
+        invokeFfi("""{"setLocalNetworkAccess":{"enable":$enable}}""")
+    }
+
+    suspend fun setFeatureFlag(flag: String, active: Boolean) {
+        invokeFfi("""{"setFeatureFlag":{"flag":${jsonConfig.encodeToString(flag)},"active":$active}}""")
+    }
+
+    suspend fun setPinnedExits(exits: List<PinnedLocation>) {
+        invokeFfi("""{"setPinnedExits":{"exits":${jsonConfig.encodeToString(exits)}}}""")
+    }
+
+    suspend fun setSniRelay(host: String?) {
+        invokeFfi("""{"setSniRelay":{"host":${jsonConfig.encodeToString(host)}}}""")
+    }
+
+    suspend fun setApiHostAlternate(host: String?) {
+        invokeFfi("""{"setApiHostAlternate":{"host":${jsonConfig.encodeToString(host)}}}""")
+    }
+
+    suspend fun rotateWgKey() {
+        invokeFfi("""{"rotateWgKey":{}}""")
+    }
+
+    suspend fun refreshExits() {
+        invokeFfi("""{"refreshExitList":{"freshness":0}}""", 30_000L)
+    }
+
+    suspend fun refreshRelays() {
+        invokeFfi("""{"refreshRelayList":{"freshness":0}}""", 30_000L)
+    }
+
+    suspend fun login(accountId: String, validate: Boolean = true) {
+        invokeFfi("""{"setInNewAccountFlow":{"value":false}}""")
+        invokeFfi("""{"login":{"accountId":"$accountId","validate":$validate}}""", 65_000L)
+    }
+
+    suspend fun createAccount(): String {
+        val newId = AccountIdUtils.generateAccountNumber()
+        invokeFfi("""{"setInNewAccountFlow":{"value":true}}""")
+        invokeFfi("""{"login":{"accountId":"$newId","validate":true}}""", 65_000L)
+        return newId
+    }
+
+    suspend fun finishNewAccountFlow() {
+        invokeFfi("""{"setInNewAccountFlow":{"value":false}}""")
+    }
+
+    suspend fun logout() {
+        disconnect()
+        invokeFfi("""{"logout":{}}""")
+    }
+
+    suspend fun deleteAccount() {
+        invokeFfi("""{"apiDeleteAccount":{}}""", 30_000L)
+        logout()
+    }
+
+    suspend fun refreshAccountInfo() {
+        runCatching { invokeFfi("""{"apiGetAccountInfo":{}}""", 30_000L) }
+    }
+
+    suspend fun refreshServiceStatus() {
+        runCatching {
+            val raw = invokeFfi("""{"apiServiceStatus":{}}""", 15_000L)
+            _serviceStatus.value = jsonConfig.decodeFromString<ServiceStatusOutput>(raw)
+        }
+    }
+
+    suspend fun purchasePlaySubscription(promoCode: String?): Boolean {
+        val billingDetails =
+            invokeFfi(jsonConfig.encodeToString(ManagerCmd.ApiGoogleBillingDetails(promoCode)), 30_000L).let {
+                jsonConfig.decodeFromString<ManagerCmdOk.ApiGoogleBillingDetails>(it)
+            }
+        val tokens = activity.billingFacade.launchFlow(activity, billingDetails) ?: return false
+        for (token in tokens) {
+            uploadPurchaseToken(binder, token, promoCode)
+        }
+        refreshAccountInfo()
+        return true
+    }
+
+    suspend fun createDebugBundle(feedback: String?): String {
+        osStatusManager.update { this.debugBundleStatus.inProgress = true }
+        val result = runCatching {
+            val cacheDir = activity.cacheDir.absolutePath
+            val cmd = ManagerCmd.CreateDebugBundle(feedback?.ifBlank { null }, collectBundleInfo(activity), cacheDir)
+            val raw = invokeFfi(jsonConfig.encodeToString(cmd), 180_000L)
+            jsonConfig.decodeFromString(String.serializer(), raw)
+        }
+        osStatusManager.update {
+            this.debugBundleStatus.inProgress = false
+            result.onSuccess { this.debugBundleStatus.latestPath = it }
+        }
+        return result.getOrThrow()
+    }
+
+    fun updateAndroidSettings(next: AndroidVpnSettings) {
+        _androidSettings.value = next
+        runCatching { binder.setAndroidSettings(jsonConfig.encodeToString(next)) }
+            .onFailure { log.error("failed to push android settings: ${it.message}") }
+    }
+}
+
+@Serializable data class ErrorHolder(val code: String)

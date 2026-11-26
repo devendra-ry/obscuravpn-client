@@ -276,6 +276,10 @@ class CoreRepository(
         invokeFfi("""{"setDnsContentBlock":{"value":${jsonConfig.encodeToString(block)}}}""")
     }
 
+    suspend fun setUseSystemDns(enable: Boolean) {
+        invokeFfi("""{"setUseSystemDns":{"enable":$enable}}""")
+    }
+
     suspend fun setLocalNetworkAccess(enable: Boolean) {
         invokeFfi("""{"setLocalNetworkAccess":{"enable":$enable}}""")
     }

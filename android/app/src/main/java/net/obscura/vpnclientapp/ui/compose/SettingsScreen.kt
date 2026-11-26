@@ -57,6 +57,7 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import net.obscura.vpnclientapp.client.CoreStatus
 import net.obscura.vpnclientapp.client.DnsContentBlock
+import net.obscura.vpnclientapp.client.FeatureFlags
 import net.obscura.vpnclientapp.client.TunnelMode
 import net.obscura.vpnclientapp.services.AndroidVpnSettings
 import net.obscura.vpnclientapp.services.BackgroundHealthHelper
@@ -117,12 +118,18 @@ private fun SettingsCoreCards(args: SettingsHostArgs) {
         },
         onMtuChange = { mtu -> scope.launch { args.repo.updateTunnelArgs(args.status.tunnelArgs.copy(udpMtu = mtu)) } },
         onKeyAgeChange = { secs -> scope.launch { args.repo.setWgKeyMaxAge(secs) } },
+        onFeatureFlagChange = { flag, active -> scope.launch { args.repo.setFeatureFlag(flag, active) } },
     )
     DnsSection(
-        block = args.status.dnsContentBlock,
-        customDns = args.androidSettings.customDns,
+        state =
+            DnsSectionState(
+                block = args.status.dnsContentBlock,
+                customDns = args.androidSettings.customDns,
+                useSystemDns = args.status.useSystemDns,
+            ),
         onBlockChange = { next -> scope.launch { args.repo.setDnsContentBlock(next) } },
         onCustomDnsChange = { next -> args.repo.updateAndroidSettings(args.androidSettings.copy(customDns = next)) },
+        onUseSystemDnsChange = { enable -> scope.launch { args.repo.setUseSystemDns(enable) } },
     )
 }
 
@@ -153,8 +160,11 @@ private fun SettingsAdvancedCards(args: SettingsHostArgs, onOpenApps: () -> Unit
         onSecureAllChange = { args.onUpdatePreferences(args.preferences.copy(secureAllScreens = it)) },
         onPersistLogsChange = { args.repo.updateAndroidSettings(args.androidSettings.copy(persistLogs = it)) },
     )
-    if (args.status.featureFlagKeys.isNotEmpty()) {
-        ExperimentalSection(args.status) { flag, active -> scope.launch { args.repo.setFeatureFlag(flag, active) } }
+    val experimentalFlags = args.status.featureFlagKeys.filter { it != "quicFramePadding" && it != "forceSmallMtu" }
+    if (experimentalFlags.isNotEmpty()) {
+        ExperimentalSection(args.status, experimentalFlags) { flag, active ->
+            scope.launch { args.repo.setFeatureFlag(flag, active) }
+        }
     }
     AppearanceSection(args.preferences.colorScheme) { scheme ->
         args.onUpdatePreferences(args.preferences.copy(colorScheme = scheme))
@@ -181,6 +191,7 @@ private fun ConnectionSection(
     onModeChange: (TunnelMode) -> Unit,
     onMtuChange: (Int?) -> Unit,
     onKeyAgeChange: (Long) -> Unit,
+    onFeatureFlagChange: (String, Boolean) -> Unit,
 ) {
     val mode = status.tunnelArgs.mode
     ObscuraCard {
@@ -204,13 +215,37 @@ private fun ConnectionSection(
             selected = mode == TunnelMode.TCP_TLS,
             onClick = { onModeChange(TunnelMode.TCP_TLS) },
         )
-        if (mode == TunnelMode.WIREGUARD_UDP) {
+        if (mode == TunnelMode.QUIC) {
+            SectionDivider()
+            StealthOptionsControl(status.featureFlags, onFeatureFlagChange)
+        } else if (mode == TunnelMode.WIREGUARD_UDP) {
             SectionDivider()
             SpeedMtuControl(status.tunnelArgs.udpMtu, onMtuChange)
         }
         SectionDivider()
         KeyRotationSection(status.wgKeyMaxAgeSecs, onKeyAgeChange)
     }
+}
+
+@Composable
+private fun StealthOptionsControl(
+    flags: FeatureFlags,
+    onFlagChange: (String, Boolean) -> Unit,
+) {
+    Text("Stealth options", style = MaterialTheme.typography.titleSmall)
+    Spacer(Modifier.height(4.dp))
+    SwitchSettingRow(
+        title = "Packet padding",
+        subtitle = "Pads outgoing QUIC packets to uniform size; uses more upload bandwidth",
+        checked = flags.quicFramePadding == true,
+        onCheckedChange = { onFlagChange("quicFramePadding", it) },
+    )
+    SwitchSettingRow(
+        title = "Small-MTU compatibility",
+        subtitle = "For networks that drop large packets; lowers speed slightly",
+        checked = flags.forceSmallMtu == true,
+        onCheckedChange = { onFlagChange("forceSmallMtu", it) },
+    )
 }
 
 @Composable
@@ -246,36 +281,82 @@ private fun KeyRotationSection(currentAgeSecs: Long, onKeyAgeChange: (Long) -> U
     RadioOptionRow("Every connection", null, currentAgeSecs == 0L) { onKeyAgeChange(0L) }
 }
 
+private data class DnsSectionState(
+    val block: DnsContentBlock,
+    val customDns: List<String>,
+    val useSystemDns: Boolean,
+)
+
 @Composable
 private fun DnsSection(
-    block: DnsContentBlock,
-    customDns: List<String>,
+    state: DnsSectionState,
     onBlockChange: (DnsContentBlock) -> Unit,
     onCustomDnsChange: (List<String>) -> Unit,
+    onUseSystemDnsChange: (Boolean) -> Unit,
 ) {
+    var confirmSystemDns by remember { mutableStateOf(false) }
+
     ObscuraCard {
         Text("DNS & Content Blocking", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(6.dp))
         NoticeBanner(
             text =
-                "Android Private DNS overrides Obscura DNS. Set Private DNS to Automatic or Off for tunnel filtering.",
+                "Android Private DNS overrides Obscura DNS. " +
+                    "Set Private DNS to Automatic or Off for tunnel filtering.",
             kind = NoticeKind.INFO,
         )
         Spacer(Modifier.height(6.dp))
-        DnsBlockCheckboxes(block, onBlockChange)
+        DnsBlockCheckboxes(state.block, enabled = !state.useSystemDns, onBlockChange)
         SectionDivider()
-        CustomDnsEditor(customDns, onCustomDnsChange)
+        CustomDnsEditor(state.customDns, enabled = !state.useSystemDns, onCustomDnsChange)
+        SectionDivider()
+        SwitchSettingRow(
+            title = "Use the network's DNS",
+            subtitle = "DNS queries go outside the tunnel; your network provider can see names you look up",
+            checked = state.useSystemDns,
+            onCheckedChange = { enable -> if (enable) confirmSystemDns = true else onUseSystemDnsChange(false) },
+        )
+    }
+
+    if (confirmSystemDns) {
+        SystemDnsConfirmDialog(
+            onConfirm = {
+                confirmSystemDns = false
+                onUseSystemDnsChange(true)
+            },
+            onDismiss = { confirmSystemDns = false },
+        )
     }
 }
 
 @Composable
-private fun DnsBlockCheckboxes(block: DnsContentBlock, onBlockChange: (DnsContentBlock) -> Unit) {
-    CheckboxRow("Block Ads", block.ad) { onBlockChange(block.copy(ad = it)) }
-    CheckboxRow("Block Trackers", block.tracker) { onBlockChange(block.copy(tracker = it)) }
-    CheckboxRow("Block Malware", block.malware) { onBlockChange(block.copy(malware = it)) }
-    CheckboxRow("Block Adult Content", block.adult) { onBlockChange(block.copy(adult = it)) }
-    CheckboxRow("Block Gambling", block.gambling) { onBlockChange(block.copy(gambling = it)) }
-    CheckboxRow("Block Social Media", block.socialMedia) { onBlockChange(block.copy(socialMedia = it)) }
+private fun SystemDnsConfirmDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Send DNS outside the tunnel?") },
+        text = {
+            Text(
+                "DNS queries will bypass the VPN and use your network provider's DNS directly. " +
+                    "Content blocking and custom DNS servers will not apply.",
+            )
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text("Use network DNS") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun DnsBlockCheckboxes(
+    block: DnsContentBlock,
+    enabled: Boolean,
+    onBlockChange: (DnsContentBlock) -> Unit,
+) {
+    CheckboxRow("Block Ads", block.ad, enabled) { onBlockChange(block.copy(ad = it)) }
+    CheckboxRow("Block Trackers", block.tracker, enabled) { onBlockChange(block.copy(tracker = it)) }
+    CheckboxRow("Block Malware", block.malware, enabled) { onBlockChange(block.copy(malware = it)) }
+    CheckboxRow("Block Adult Content", block.adult, enabled) { onBlockChange(block.copy(adult = it)) }
+    CheckboxRow("Block Gambling", block.gambling, enabled) { onBlockChange(block.copy(gambling = it)) }
+    CheckboxRow("Block Social Media", block.socialMedia, enabled) { onBlockChange(block.copy(socialMedia = it)) }
 }
 
 private data class AddressEditorSpec(
@@ -286,7 +367,11 @@ private data class AddressEditorSpec(
 )
 
 @Composable
-private fun CustomDnsEditor(customDns: List<String>, onCustomDnsChange: (List<String>) -> Unit) {
+private fun CustomDnsEditor(
+    customDns: List<String>,
+    enabled: Boolean,
+    onCustomDnsChange: (List<String>) -> Unit,
+) {
     AddressListEditor(
         spec =
             AddressEditorSpec(
@@ -296,6 +381,7 @@ private fun CustomDnsEditor(customDns: List<String>, onCustomDnsChange: (List<St
                 normalize = { candidate -> candidate.takeIf(::isIpLiteral) },
             ),
         items = customDns,
+        enabled = enabled,
         onItemsChange = onCustomDnsChange,
     )
 }
@@ -311,6 +397,7 @@ private fun ExcludedCidrsEditor(excludedCidrs: List<String>, onExcludedCidrsChan
                 normalize = { candidate -> TunPlan.parseExcludedCidr(candidate)?.let { "${it.address}/${it.prefix}" } },
             ),
         items = excludedCidrs,
+        enabled = true,
         onItemsChange = onExcludedCidrsChange,
     )
 }
@@ -319,6 +406,7 @@ private fun ExcludedCidrsEditor(excludedCidrs: List<String>, onExcludedCidrsChan
 private fun AddressListEditor(
     spec: AddressEditorSpec,
     items: List<String>,
+    enabled: Boolean,
     onItemsChange: (List<String>) -> Unit,
 ) {
     var input by remember { mutableStateOf("") }
@@ -335,9 +423,11 @@ private fun AddressListEditor(
             },
             placeholder = { Text(spec.placeholder) },
             singleLine = true,
+            enabled = enabled,
             modifier = Modifier.weight(1f),
         )
         Button(
+            enabled = enabled,
             onClick = {
                 val normalized = spec.normalize(input.trim())
                 if (normalized == null) {
@@ -367,7 +457,7 @@ private fun AddressListEditor(
                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontMono),
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = { onItemsChange(items - entry) }) {
+            IconButton(enabled = enabled, onClick = { onItemsChange(items - entry) }) {
                 Icon(AppIcons.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp))
             }
         }
@@ -578,11 +668,15 @@ private fun PrivacyDiagnosticsSection(
 }
 
 @Composable
-private fun ExperimentalSection(status: CoreStatus, onFlagChange: (String, Boolean) -> Unit) {
+private fun ExperimentalSection(
+    status: CoreStatus,
+    keys: List<String>,
+    onFlagChange: (String, Boolean) -> Unit,
+) {
     ObscuraCard {
         Text("Experimental", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(6.dp))
-        status.featureFlagKeys.forEach { flag ->
+        keys.forEach { flag ->
             val current = resolveFlagValue(status, flag)
             SwitchSettingRow(
                 title = flag,
@@ -760,14 +854,24 @@ private fun RadioOptionRow(
 }
 
 @Composable
-private fun CheckboxRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+private fun CheckboxRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable { onCheckedChange(!checked) }.padding(vertical = 4.dp),
+        modifier =
+            Modifier.fillMaxWidth().clickable(enabled = enabled) { onCheckedChange(!checked) }.padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Checkbox(checked = checked, onCheckedChange = onCheckedChange)
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         Spacer(Modifier.width(8.dp))
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else LocalExtraColors.current.muted,
+        )
     }
 }
 

@@ -35,10 +35,11 @@ internal class VpnRestoreStore(context: Context) {
         }
     }
 
-    fun setLoggedIn(isLoggedIn: Boolean) {
-        if (loggedIn != isLoggedIn) {
-            prefs.edit { putBoolean(KEY_LOGGED_IN, isLoggedIn) }
-        }
+    /** Returns whether the stored value changed (or was stored for the first time). */
+    fun setLoggedIn(isLoggedIn: Boolean): Boolean {
+        if (prefs.contains(KEY_LOGGED_IN) && loggedIn == isLoggedIn) return false
+        prefs.edit { putBoolean(KEY_LOGGED_IN, isLoggedIn) }
+        return true
     }
 
     fun shouldStartOnBoot(): Boolean = autoConnect

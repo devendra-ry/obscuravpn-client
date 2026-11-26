@@ -275,8 +275,8 @@ private fun ExitReadyList(shared: PickerSharedState, allExits: List<OneExit>) {
         }
     val selectExit: (ExitSelector) -> Unit = { selector ->
         scope.launch {
-            shared.repo.updateTunnelArgs(shared.status.tunnelArgs.copy(exit = selector))
-            if (shared.status.vpnStatus.disconnected == null) {
+            val saved = shared.repo.updateTunnelArgs(shared.status.tunnelArgs.copy(exit = selector))
+            if (saved.isSuccess && shared.status.vpnStatus.disconnected == null) {
                 shared.onSelected()
             }
         }
@@ -511,8 +511,8 @@ private fun RelayPickerList(shared: PickerSharedState, relaysState: ListLoadStat
             val groups = remember(relaysState.items, shared.query) { buildRelayTree(relaysState.items, shared.query) }
             val selectRelay: (RelaySelector) -> Unit = { selector ->
                 scope.launch {
-                    shared.repo.updateTunnelArgs(shared.status.tunnelArgs.copy(relay = selector))
-                    if (shared.status.vpnStatus.disconnected == null) {
+                    val saved = shared.repo.updateTunnelArgs(shared.status.tunnelArgs.copy(relay = selector))
+                    if (saved.isSuccess && shared.status.vpnStatus.disconnected == null) {
                         shared.onSelected()
                     }
                 }

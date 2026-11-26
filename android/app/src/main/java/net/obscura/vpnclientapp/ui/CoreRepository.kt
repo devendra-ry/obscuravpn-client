@@ -247,16 +247,27 @@ class CoreRepository(
         runCatching { binder.stopTunnel() }
     }
 
-    suspend fun updateTunnelArgs(args: TunnelArgs) {
-        val json =
-            jsonConfig.encodeToString(
-                ManagerCmd.SetTunnelArgs(
-                    args = jsonConfig.decodeFromString(jsonConfig.encodeToString(args)),
-                    active = null,
+    /**
+     * Stores [args]; Rust reconnects at once when the tunnel is up. Callers fire this from `scope.launch` in the UI,
+     * where an uncaught exception would crash the app, so a failure is logged and returned instead of thrown.
+     */
+    suspend fun updateTunnelArgs(args: TunnelArgs): Result<Unit> =
+        try {
+            val json =
+                jsonConfig.encodeToString(
+                    ManagerCmd.SetTunnelArgs(
+                        args = jsonConfig.decodeFromString(jsonConfig.encodeToString(args)),
+                        active = null,
+                    )
                 )
-            )
-        invokeFfi(json)
-    }
+            invokeFfi(json)
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.error("failed to update tunnel args: ${e.message}", tr = e)
+            Result.failure(e)
+        }
 
     suspend fun setWgKeyMaxAge(secs: Long) {
         invokeFfi("""{"setWgKeyMaxAge":{"secs":$secs}}""")

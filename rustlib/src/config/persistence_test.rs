@@ -20,6 +20,7 @@ use crate::config::Config;
 use crate::config::ConfigKey;
 use crate::config::ConfigLoadError;
 use crate::config::PinnedLocation;
+use crate::config::RotationReason;
 use crate::config::cached::ConfigCached;
 use crate::config::load;
 use crate::config::load_with_key;
@@ -361,6 +362,44 @@ fn keychain_key_store_keeps_secret_out_of_config() {
     let (new_secret_key, new_public_key) = config.wireguard_key_cache.use_key_pair(&key_store_lost);
     assert_ne!(new_public_key, public_key);
     assert_eq!(stored.lock().unwrap().last(), Some(&new_secret_key.to_bytes()));
+}
+
+/// An upgrade from the official Android app, which used `WgKeyStore::Plaintext`: the key pair in config.json keeps
+/// working with the Keychain store (no new key, no new registration) and moves to the Keychain at the next rotation.
+#[test]
+fn plaintext_key_pair_from_official_android_app_survives_upgrade_to_keychain() {
+    use std::sync::Mutex;
+
+    let dir = tempdir().unwrap();
+    let mut config = load(dir.as_ref(), &WgKeyStore::Plaintext).unwrap();
+    let (old_secret_key, old_public_key) = config.wireguard_key_cache.use_key_pair(&WgKeyStore::Plaintext);
+    save(dir.as_ref(), &config).unwrap();
+
+    let stored: Arc<Mutex<Vec<[u8; 32]>>> = Default::default();
+    let keychain = WgKeyStore::Keychain {
+        secret_key: None,
+        set_secret_key: Box::new({
+            let stored = stored.clone();
+            move |secret_key: &[u8; 32]| {
+                stored.lock().unwrap().push(*secret_key);
+                true
+            }
+        }),
+    };
+    let mut config = load(dir.as_ref(), &keychain).unwrap();
+    let (secret_key, public_key) = config.wireguard_key_cache.use_key_pair(&keychain);
+    assert_eq!(secret_key.to_bytes(), old_secret_key.to_bytes());
+    assert_eq!(public_key, old_public_key);
+    assert!(stored.lock().unwrap().is_empty(), "no new key on upgrade");
+
+    config.wireguard_key_cache.rotate_now(RotationReason::Manual, &keychain);
+    let (rotated_secret_key, rotated_public_key) = config.wireguard_key_cache.use_key_pair(&keychain);
+    assert_ne!(rotated_public_key, old_public_key);
+    assert_eq!(
+        *stored.lock().unwrap(),
+        vec![rotated_secret_key.to_bytes()],
+        "the rotated key goes to the Keychain"
+    );
 }
 
 /// Ombra patch P5: the ids of the Speed mode tunnels survive a restart, so that their tunnels are deleted then. Config

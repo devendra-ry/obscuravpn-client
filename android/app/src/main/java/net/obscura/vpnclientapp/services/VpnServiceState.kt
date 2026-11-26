@@ -60,15 +60,35 @@ object VpnServiceStateRegistry {
     }
 
     fun resolveRuntimeState(context: Context): VpnServiceRuntimeState {
-        val live = _state.value
-        if (live.connectionState != TileConnectionState.Disconnected) return live
         val store = VpnRestoreStore(context)
-        return if (store.wantConnected && store.loggedIn) {
+        return resolve(
+            live = _state.value,
+            serviceRunning = ObscuraVpnService.isRunning(),
+            wantConnected = store.wantConnected,
+            loggedIn = store.loggedIn,
+        )
+    }
+
+    /**
+     * While the service runs, its live status is the truth: a tunnel that Rust stopped on its own shows as disconnected
+     * even though the user still "wants" it. Only when the service is not running (the process was just started for a
+     * tile or widget, or restarts after a kill) does the stored wish stand in for it, as "connecting".
+     */
+    internal fun resolve(
+        live: VpnServiceRuntimeState,
+        serviceRunning: Boolean,
+        wantConnected: Boolean,
+        loggedIn: Boolean,
+    ): VpnServiceRuntimeState =
+        if (!serviceRunning && live.connectionState == TileConnectionState.Disconnected && wantConnected && loggedIn) {
             live.copy(connectionState = TileConnectionState.Connecting)
         } else {
             live
         }
-    }
+
+    /** Whether connecting needs the app first: to log in, or to grant the VPN permission. */
+    fun connectNeedsApp(context: Context): Boolean =
+        !VpnRestoreStore(context).loggedIn || context.prepareVpnService() != PrepareResult.Ready
 
     fun notifySystemSurfaces(context: Context) {
         ObscuraTileService.requestTileUpdate(context)
@@ -101,8 +121,7 @@ object VpnServiceStateRegistry {
                     .onFailure { log.error("failed to stop service from surface: ${it.message}", tr = it) }
             }
             TileConnectionState.Disconnected -> {
-                val store = VpnRestoreStore(context)
-                if (!store.loggedIn || context.prepareVpnService() != PrepareResult.Ready) {
+                if (connectNeedsApp(context)) {
                     log.info("surface opening app for setup/login")
                     launchApp(openMainAppPendingIntent(context))
                 } else {

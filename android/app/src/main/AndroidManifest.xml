@@ -13,6 +13,18 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Split tunnelling lists, and passes to VpnService.Builder, launchable apps only; no QUERY_ALL_PACKAGES. Without
+         this, Android 11+ hides other apps: the picker shows almost none and TunPlan drops the hidden ones. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- MIUI/HyperOS settings screens that BackgroundHealthHelper opens. -->
+        <package android:name="com.miui.powerkeeper" />
+        <package android:name="com.miui.securitycenter" />
+    </queries>
+
     <application
         android:name=".App"
         android:allowBackup="true"
@@ -96,6 +108,11 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/obscura_widget_info" />
         </receiver>
+
+        <!-- The widget's toggle button. Not exported: only this app's own PendingIntent may reach it. -->
+        <receiver
+            android:name=".services.ObscuraWidgetToggleReceiver"
+            android:exported="false" />
 
         <receiver
             android:name=".services.AutoConnectBootReceiver"

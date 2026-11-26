@@ -11,7 +11,7 @@ import androidx.core.content.ContextCompat
 import net.obscura.vpnclientapp.BuildConfig
 import net.obscura.vpnclientapp.R
 
-private const val ACTION_WIDGET_TOGGLE = "${BuildConfig.APPLICATION_ID}.actionWidgetToggle"
+internal const val ACTION_WIDGET_TOGGLE = "${BuildConfig.APPLICATION_ID}.actionWidgetToggle"
 
 class ObscuraWidgetProvider : AppWidgetProvider() {
     internal data class WidgetPresentation(
@@ -19,14 +19,6 @@ class ObscuraWidgetProvider : AppWidgetProvider() {
         val actionText: String,
         val isActive: Boolean,
     )
-
-    override fun onReceive(context: Context, intent: Intent) {
-        super.onReceive(context, intent)
-        if (intent.action == ACTION_WIDGET_TOGGLE) {
-            VpnServiceStateRegistry.toggleTunnelOrLaunch(context) { pending -> pending.send() }
-            updateAll(context)
-        }
-    }
 
     override fun onUpdate(context: Context, appWidgetManager: AppWidgetManager, appWidgetIds: IntArray) {
         val runtime = VpnServiceStateRegistry.resolveRuntimeState(context)
@@ -76,15 +68,30 @@ class ObscuraWidgetProvider : AppWidgetProvider() {
                     R.id.widget_info_area,
                     VpnServiceStateRegistry.openMainAppPendingIntent(context),
                 )
-                setOnClickPendingIntent(R.id.widget_action_button, togglePendingIntent(context))
+                setOnClickPendingIntent(R.id.widget_action_button, actionPendingIntent(context, runtime))
             }
         }
 
+        /**
+         * The button opens the app directly when connecting needs it (login or VPN permission): an activity started
+         * from a broadcast receiver is blocked by Android's background activity start rules.
+         */
+        private fun actionPendingIntent(context: Context, runtime: VpnServiceRuntimeState): PendingIntent =
+            if (
+                runtime.connectionState == TileConnectionState.Disconnected &&
+                    VpnServiceStateRegistry.connectNeedsApp(context)
+            ) {
+                VpnServiceStateRegistry.openMainAppPendingIntent(context)
+            } else {
+                togglePendingIntent(context)
+            }
+
+        /** Targets [ObscuraWidgetToggleReceiver], which is not exported, so no other app can toggle the VPN. */
         private fun togglePendingIntent(context: Context): PendingIntent =
             PendingIntent.getBroadcast(
                 context,
                 1,
-                Intent(context, ObscuraWidgetProvider::class.java).apply { action = ACTION_WIDGET_TOGGLE },
+                Intent(context, ObscuraWidgetToggleReceiver::class.java).apply { action = ACTION_WIDGET_TOGGLE },
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
 

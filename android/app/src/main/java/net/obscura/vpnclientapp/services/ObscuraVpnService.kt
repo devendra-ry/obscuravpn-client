@@ -102,6 +102,9 @@ class ObscuraVpnService : VpnService() {
         private val shutdownHookRegistered = java.util.concurrent.atomic.AtomicBoolean(false)
         private const val SESSION_NAME = "Obscura VPN"
 
+        /** Whether the service is alive in this process, so its live status is the truth. */
+        internal fun isRunning(): Boolean = instance.get() != null
+
         @androidx.annotation.Keep
         @JvmStatic
         fun ffiSetNetworkConfig(json: String): Int {
@@ -359,8 +362,10 @@ class ObscuraVpnService : VpnService() {
     }
 
     private fun startWithArgs(args: String?, isForeground: Boolean) {
+        // Without the foreground promotion (no VPN permission) nothing starts, so nothing is remembered as wanted.
+        if (!isForeground) return
         restoreStore.setWantConnected(true, args)
-        if (isForeground) startTunnel(args)
+        startTunnel(args)
     }
 
     override fun onBind(intent: Intent?): IBinder {
@@ -395,14 +400,15 @@ class ObscuraVpnService : VpnService() {
         log.info("status updated $status", "xXx7PxdD")
         this.vpnStatus = status.vpnStatus
         val loggedIn = status.accountId != null && !status.inNewAccountFlow
-        restoreStore.setLoggedIn(loggedIn)
+        val loggedInChanged = restoreStore.setLoggedIn(loggedIn)
         restoreStore.setAutoConnect(status.autoConnect && loggedIn)
         if (!loggedIn) {
             restoreStore.setWantConnected(false, null)
         }
         val prevState = VpnServiceStateRegistry.state.value
         VpnServiceStateRegistry.updateFromStatus(status.vpnStatus, isAlwaysOn, isLockdownEnabled)
-        if (prevState != VpnServiceStateRegistry.state.value) {
+        // The widget's button depends on the login state too, so a login or logout redraws it.
+        if (loggedInChanged || prevState != VpnServiceStateRegistry.state.value) {
             VpnServiceStateRegistry.notifySystemSurfaces(this)
         }
         val isConnecting = status.vpnStatus is ManagerCmdOk.GetStatus.VpnStatus.Connecting

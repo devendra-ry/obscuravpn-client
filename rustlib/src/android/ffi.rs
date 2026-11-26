@@ -149,7 +149,12 @@ fn store_wg_secret_key_fn(jvm: Arc<JavaVM>, class_cache: Arc<ClassCache>) -> Key
         let stored = env.with_local_frame(LOCAL_FRAME_CAPACITY, |env| -> jni::errors::Result<bool> {
             let j_secret_key = env.byte_array_from_slice(secret_key)?;
             let stored = env
-                .call_static_method(class_cache.vpn_service(), "ffiStoreWgSecretKey", "([B)Z", &[JValue::Object(&j_secret_key)])
+                .call_static_method(
+                    class_cache.vpn_service(),
+                    "ffiStoreWgSecretKey",
+                    "([B)Z",
+                    &[JValue::Object(&j_secret_key)],
+                )
                 .and_then(|value| value.z());
             clear_pending_exception(env);
             env.set_byte_array_region(&j_secret_key, 0, &[0; 32])?;

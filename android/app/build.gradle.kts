@@ -27,6 +27,8 @@ extensions.configure<ApplicationExtension> {
         versionName = project.getVersionName(project.rootDir)
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     buildFeatures {

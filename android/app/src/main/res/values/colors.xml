@@ -10,4 +10,8 @@
     <color name="slate_800">#303030</color>
     <color name="background_light">#ffffff</color>
     <color name="background_dark">#303030</color>
+    <color name="widget_accent">#FF6025</color>
+    <color name="widget_title">#212529</color>
+    <color name="widget_subtitle">#868E96</color>
+    <color name="widget_btn_inactive_bg">#F1F3F5</color>
 </resources>

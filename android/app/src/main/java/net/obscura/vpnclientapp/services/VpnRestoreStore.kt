@@ -15,6 +15,9 @@ internal class VpnRestoreStore(context: Context) {
     val autoConnect: Boolean
         get() = prefs.getBoolean(KEY_AUTO_CONNECT, false)
 
+    val loggedIn: Boolean
+        get() = prefs.getBoolean(KEY_LOGGED_IN, false)
+
     fun setWantConnected(want: Boolean, tunnelArgsJson: String?) {
         prefs.edit {
             putBoolean(KEY_WANT_CONNECTED, want)
@@ -32,6 +35,12 @@ internal class VpnRestoreStore(context: Context) {
         }
     }
 
+    fun setLoggedIn(isLoggedIn: Boolean) {
+        if (loggedIn != isLoggedIn) {
+            prefs.edit { putBoolean(KEY_LOGGED_IN, isLoggedIn) }
+        }
+    }
+
     fun shouldStartOnBoot(): Boolean = autoConnect
 
     fun shouldStartOnUpgrade(): Boolean = autoConnect || wantConnected
@@ -41,5 +50,6 @@ internal class VpnRestoreStore(context: Context) {
         const val KEY_WANT_CONNECTED = "want_connected"
         const val KEY_LAST_ARGS = "last_tunnel_args"
         const val KEY_AUTO_CONNECT = "auto_connect"
+        const val KEY_LOGGED_IN = "logged_in"
     }
 }

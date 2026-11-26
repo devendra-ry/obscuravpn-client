@@ -275,8 +275,10 @@ private fun ExitReadyList(shared: PickerSharedState, allExits: List<OneExit>) {
         }
     val selectExit: (ExitSelector) -> Unit = { selector ->
         scope.launch {
-            shared.repo.connect(exit = selector)
-            shared.onSelected()
+            shared.repo.updateTunnelArgs(shared.status.tunnelArgs.copy(exit = selector))
+            if (shared.status.vpnStatus.disconnected == null) {
+                shared.onSelected()
+            }
         }
     }
     val togglePin: (String, String) -> Unit = { country, city ->
@@ -509,8 +511,10 @@ private fun RelayPickerList(shared: PickerSharedState, relaysState: ListLoadStat
             val groups = remember(relaysState.items, shared.query) { buildRelayTree(relaysState.items, shared.query) }
             val selectRelay: (RelaySelector) -> Unit = { selector ->
                 scope.launch {
-                    shared.repo.connect(relay = selector)
-                    shared.onSelected()
+                    shared.repo.updateTunnelArgs(shared.status.tunnelArgs.copy(relay = selector))
+                    if (shared.status.vpnStatus.disconnected == null) {
+                        shared.onSelected()
+                    }
                 }
             }
             LazyColumn(

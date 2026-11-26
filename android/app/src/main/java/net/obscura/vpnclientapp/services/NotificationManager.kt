@@ -1,11 +1,13 @@
 package net.obscura.vpnclientapp.services
 
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager as PlatformNotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import androidx.core.app.NotificationChannelCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -29,14 +31,22 @@ internal class NotificationManager(private val context: Context) {
     private val manager = NotificationManagerCompat.from(this.context)
 
     init {
-        this.manager.createNotificationChannel(
-            NotificationChannelCompat.Builder(
-                    NOTIFICATION_CHANNEL_ID,
-                    NotificationManagerCompat.IMPORTANCE_LOW,
-                )
-                .setName(this.context.getString(R.string.notification_channel_vpn_name))
-                .build(),
-        )
+        this.context
+            .getSystemService(PlatformNotificationManager::class.java)
+            ?.createNotificationChannel(
+                NotificationChannel(
+                        NOTIFICATION_CHANNEL_ID,
+                        this.context.getString(R.string.notification_channel_vpn_name),
+                        PlatformNotificationManager.IMPORTANCE_LOW,
+                    )
+                    .apply {
+                        setShowBadge(false)
+                        lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                        enableLights(false)
+                        enableVibration(false)
+                        setSound(null, null)
+                    },
+            )
     }
 
     private fun buildIntentMainActivity(path: String?) =

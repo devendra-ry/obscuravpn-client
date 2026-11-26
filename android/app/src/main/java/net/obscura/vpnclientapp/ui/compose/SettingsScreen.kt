@@ -35,7 +35,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +49,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.net.InetAddress
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -54,7 +59,12 @@ import net.obscura.vpnclientapp.client.CoreStatus
 import net.obscura.vpnclientapp.client.DnsContentBlock
 import net.obscura.vpnclientapp.client.TunnelMode
 import net.obscura.vpnclientapp.services.AndroidVpnSettings
+import net.obscura.vpnclientapp.services.BackgroundHealthHelper
+import net.obscura.vpnclientapp.services.BackgroundHealthStatus
 import net.obscura.vpnclientapp.services.SplitMode
+import net.obscura.vpnclientapp.services.TunPlan
+import net.obscura.vpnclientapp.services.VpnServiceRuntimeState
+import net.obscura.vpnclientapp.services.VpnServiceStateRegistry
 import net.obscura.vpnclientapp.ui.CoreRepository
 import net.obscura.vpnclientapp.ui.OsStatus
 import net.obscura.vpnclientapp.ui.PreferencesManager
@@ -119,9 +129,15 @@ private fun SettingsCoreCards(args: SettingsHostArgs) {
 @Composable
 private fun SettingsAdvancedCards(args: SettingsHostArgs, onOpenApps: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val runtimeState by VpnServiceStateRegistry.state.collectAsState()
+    SystemBackgroundSection(runtimeState)
     SplitTunnelSection(
         settings = args.androidSettings,
+        isLockdownEnabled = runtimeState.isLockdownEnabled,
         onModeChange = { mode -> args.repo.updateAndroidSettings(args.androidSettings.copy(splitMode = mode)) },
+        onExcludedCidrsChange = { cidrs ->
+            args.repo.updateAndroidSettings(args.androidSettings.copy(excludedCidrs = cidrs))
+        },
         onOpenApps = onOpenApps,
     )
     NetworkSection(
@@ -262,53 +278,96 @@ private fun DnsBlockCheckboxes(block: DnsContentBlock, onBlockChange: (DnsConten
     CheckboxRow("Block Social Media", block.socialMedia) { onBlockChange(block.copy(socialMedia = it)) }
 }
 
+private data class AddressEditorSpec(
+    val title: String,
+    val placeholder: String,
+    val invalidMessage: String,
+    val normalize: (String) -> String?,
+)
+
 @Composable
 private fun CustomDnsEditor(customDns: List<String>, onCustomDnsChange: (List<String>) -> Unit) {
-    var dnsInput by remember { mutableStateOf("") }
-    var dnsError by remember { mutableStateOf<String?>(null) }
+    AddressListEditor(
+        spec =
+            AddressEditorSpec(
+                title = "Custom DNS servers",
+                placeholder = "1.1.1.1 or 2606:4700:4700::1111",
+                invalidMessage = "Enter a valid IPv4 or IPv6 address",
+                normalize = { candidate -> candidate.takeIf(::isIpLiteral) },
+            ),
+        items = customDns,
+        onItemsChange = onCustomDnsChange,
+    )
+}
 
-    Text("Custom DNS servers", style = MaterialTheme.typography.titleSmall)
+@Composable
+private fun ExcludedCidrsEditor(excludedCidrs: List<String>, onExcludedCidrsChange: (List<String>) -> Unit) {
+    AddressListEditor(
+        spec =
+            AddressEditorSpec(
+                title = "Excluded IPs & subnets (CIDR)",
+                placeholder = "192.168.1.0/24 or 10.0.0.5",
+                invalidMessage = "Enter a valid IPv4 or IPv6 IP/CIDR (prefix > 0)",
+                normalize = { candidate -> TunPlan.parseExcludedCidr(candidate)?.let { "${it.address}/${it.prefix}" } },
+            ),
+        items = excludedCidrs,
+        onItemsChange = onExcludedCidrsChange,
+    )
+}
+
+@Composable
+private fun AddressListEditor(
+    spec: AddressEditorSpec,
+    items: List<String>,
+    onItemsChange: (List<String>) -> Unit,
+) {
+    var input by remember { mutableStateOf("") }
+    var inputError by remember { mutableStateOf<String?>(null) }
+
+    Text(spec.title, style = MaterialTheme.typography.titleSmall)
     Spacer(Modifier.height(6.dp))
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
-            value = dnsInput,
+            value = input,
             onValueChange = {
-                dnsInput = it
-                dnsError = null
+                input = it
+                inputError = null
             },
-            placeholder = { Text("1.1.1.1 or 2606:4700:4700::1111") },
+            placeholder = { Text(spec.placeholder) },
             singleLine = true,
             modifier = Modifier.weight(1f),
         )
         Button(
             onClick = {
-                val candidate = dnsInput.trim()
-                if (!isIpLiteral(candidate)) {
-                    dnsError = "Enter a valid IPv4 or IPv6 address"
-                } else if (candidate !in customDns) {
-                    onCustomDnsChange(customDns + candidate)
-                    dnsInput = ""
+                val normalized = spec.normalize(input.trim())
+                if (normalized == null) {
+                    inputError = spec.invalidMessage
+                } else if (normalized !in items) {
+                    onItemsChange(items + normalized)
+                    input = ""
+                } else {
+                    input = ""
                 }
             },
         ) {
             Text("Add")
         }
     }
-    dnsError?.let {
+    inputError?.let {
         Spacer(Modifier.height(6.dp))
         NoticeBanner(text = it, kind = NoticeKind.ERROR)
     }
-    customDns.forEach { ip ->
+    items.forEach { entry ->
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                ip,
+                entry,
                 style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontMono),
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = { onCustomDnsChange(customDns - ip) }) {
+            IconButton(onClick = { onItemsChange(items - entry) }) {
                 Icon(AppIcons.Close, contentDescription = "Remove", modifier = Modifier.size(16.dp))
             }
         }
@@ -316,14 +375,99 @@ private fun CustomDnsEditor(customDns: List<String>, onCustomDnsChange: (List<St
 }
 
 @Composable
+private fun SystemBackgroundSection(runtimeState: VpnServiceRuntimeState) {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var health by remember { mutableStateOf(BackgroundHealthHelper.query(context)) }
+
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                health = BackgroundHealthHelper.query(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    ObscuraCard {
+        Text("System & Background", style = MaterialTheme.typography.titleMedium)
+        Spacer(Modifier.height(6.dp))
+        KeyValueRow(label = "Battery & background policy", value = backgroundSummaryText(health))
+        if (!health.ignoringBatteryOptimizations || health.backgroundRestricted) {
+            Spacer(Modifier.height(6.dp))
+            NoticeBanner(
+                text =
+                    "Allow unrestricted background usage so Android or HyperOS " +
+                        "does not kill the VPN tunnel while idle.",
+                kind = NoticeKind.WARNING,
+                actionLabel = "Allow unrestricted",
+                onAction = { BackgroundHealthHelper.openBatterySettings(context) },
+            )
+        } else {
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { BackgroundHealthHelper.openBatterySettings(context) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Battery settings")
+            }
+        }
+        if (health.isXiaomiFamily) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { BackgroundHealthHelper.openXiaomiAutostartSettings(context) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("HyperOS / MIUI Autostart")
+            }
+        }
+        SectionDivider()
+        KeyValueRow(label = "Android Always-On VPN", value = alwaysOnSummaryText(runtimeState))
+        Spacer(Modifier.height(6.dp))
+        OutlinedButton(
+            onClick = { BackgroundHealthHelper.openVpnSystemSettings(context) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Open Android VPN settings")
+        }
+    }
+}
+
+private fun backgroundSummaryText(health: BackgroundHealthStatus): String =
+    when {
+        health.backgroundRestricted -> "Restricted (OS may stop background VPN)"
+        health.ignoringBatteryOptimizations -> "Unrestricted"
+        else -> "Optimized (recommended: set to Unrestricted)"
+    }
+
+private fun alwaysOnSummaryText(state: VpnServiceRuntimeState): String =
+    when {
+        state.isLockdownEnabled -> "Always-On + Lockdown (blocks traffic outside VPN)"
+        state.isAlwaysOn -> "Always-On enabled"
+        else -> "Off"
+    }
+
+@Composable
 private fun SplitTunnelSection(
     settings: AndroidVpnSettings,
+    isLockdownEnabled: Boolean,
     onModeChange: (SplitMode) -> Unit,
+    onExcludedCidrsChange: (List<String>) -> Unit,
     onOpenApps: () -> Unit,
 ) {
     ObscuraCard {
         Text("Split Tunnelling", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
+        if (isLockdownEnabled && (settings.splitMode != SplitMode.Off || settings.excludedCidrs.isNotEmpty())) {
+            NoticeBanner(
+                text =
+                    "Android Lockdown mode is active. Apps or subnets bypassing the VPN " +
+                        "will lose network access while Lockdown is enabled.",
+                kind = NoticeKind.WARNING,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
             SplitMode.entries.forEachIndexed { idx, mode ->
                 SegmentedButton(
@@ -342,6 +486,8 @@ private fun SplitTunnelSection(
                 Text("$verb apps (${settings.splitApps.size} selected)")
             }
         }
+        SectionDivider()
+        ExcludedCidrsEditor(settings.excludedCidrs, onExcludedCidrsChange)
     }
 }
 

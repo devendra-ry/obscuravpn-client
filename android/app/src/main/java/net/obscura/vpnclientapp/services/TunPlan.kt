@@ -14,6 +14,7 @@ data class TunPlan(
     val mtu: Int,
     val addresses: List<Cidr>,
     val routes: List<Cidr>,
+    val excludedRoutes: List<Cidr>,
     val dnsServers: List<String>,
     val apps: AppScope,
 ) {
@@ -31,6 +32,7 @@ data class TunPlan(
         ): TunPlan {
             val routes = config.routes.map { Cidr(it.address, it.prefix) }
             val dns = dnsServers(config, settings, isUsableDns)
+            val excludedRoutes = settings.excludedCidrs.mapNotNull(::parseExcludedCidr).distinct()
             val plan =
                 TunPlan(
                     mtu = config.mtu,
@@ -40,12 +42,47 @@ data class TunPlan(
                             cidr(config.ipv6, IPV6_HOST_PREFIX),
                         ),
                     routes = routes + dnsHostRoutes(dns, routes),
+                    excludedRoutes = excludedRoutes,
                     dnsServers = dns,
                     apps = appScope(settings, ownPackage, isInstalled),
                 )
             require(routes.isNotEmpty()) { "no routes" }
             require(plan.dnsServers.isNotEmpty() || config.useSystemDns) { "no usable DNS server" }
             return plan
+        }
+
+        fun parseExcludedCidr(raw: String): Cidr? {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return null
+            val parts = trimmed.split('/', limit = 2)
+            val addrBytes = ipLiteral(parts[0]) ?: return null
+            val maxPrefix = addrBytes.size * Byte.SIZE_BITS
+            val prefix =
+                if (parts.size == 1) {
+                    maxPrefix
+                } else {
+                    parts[1].toIntOrNull()?.takeIf { it in 1..maxPrefix } ?: return null
+                }
+            val masked = maskNetworkBytes(addrBytes, prefix)
+            val canonical = InetAddress.getByAddress(masked).hostAddress ?: return null
+            return Cidr(canonical, prefix)
+        }
+
+        private fun maskNetworkBytes(bytes: ByteArray, prefix: Int): ByteArray {
+            val out = bytes.copyOf()
+            var remaining = prefix
+            for (i in out.indices) {
+                if (remaining <= 0) {
+                    out[i] = 0
+                } else if (remaining < Byte.SIZE_BITS) {
+                    val mask = (0xFF shl (Byte.SIZE_BITS - remaining)) and 0xFF
+                    out[i] = (out[i].toInt() and mask).toByte()
+                    remaining = 0
+                } else {
+                    remaining -= Byte.SIZE_BITS
+                }
+            }
+            return out
         }
 
         private fun dnsServers(

@@ -68,10 +68,7 @@ fun RouteCard(
     onChooseExit: () -> Unit,
 ) {
     val connected = status.vpnStatus.connected
-    val shown =
-        status.vpnStatus.connecting?.tunnelArgs
-            ?: if (connected != null) status.tunnelArgs
-            else TunnelArgs(mode = status.tunnelArgs.mode, udpMtu = status.tunnelArgs.udpMtu)
+    val shown = status.vpnStatus.connecting?.tunnelArgs ?: status.tunnelArgs
     val entry = resolveEntryHop(connected, shown, relays)
     val exit = resolveExitHop(connected, shown, exits)
     val lineColor = if (connected != null) LocalExtraColors.current.success else LocalExtraColors.current.border

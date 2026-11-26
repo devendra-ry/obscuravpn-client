@@ -10,6 +10,7 @@ import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
 import android.net.InetAddresses
+import android.net.IpPrefix
 import android.net.LinkProperties
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -205,7 +206,9 @@ class ObscuraVpnService : VpnService() {
             log.error("instance already initialized", "xR4mNb7c")
         }
 
-        log.info("onCreate", "vqiGa01f")
+        log.info("onCreate alwaysOn=$isAlwaysOn lockdown=$isLockdownEnabled", "vqiGa01f")
+        VpnServiceStateRegistry.updateSystemFlags(isAlwaysOn, isLockdownEnabled)
+        VpnServiceStateRegistry.notifySystemSurfaces(this)
         logLastExitReason()
         registerShutdownHookIfNeeded()
 
@@ -330,7 +333,11 @@ class ObscuraVpnService : VpnService() {
                 return START_NOT_STICKY
             }
             SERVICE_INTERFACE -> {
-                log.info("onStartCommand was system-initiated", "sktWFegO")
+                log.info(
+                    "onStartCommand was system-initiated alwaysOn=$isAlwaysOn lockdown=$isLockdownEnabled",
+                    "sktWFegO",
+                )
+                VpnServiceStateRegistry.updateSystemFlags(isAlwaysOn, isLockdownEnabled)
                 startWithArgs(restoreStore.lastTunnelArgs, isForeground)
             }
             null -> {
@@ -388,9 +395,15 @@ class ObscuraVpnService : VpnService() {
         log.info("status updated $status", "xXx7PxdD")
         this.vpnStatus = status.vpnStatus
         val loggedIn = status.accountId != null && !status.inNewAccountFlow
+        restoreStore.setLoggedIn(loggedIn)
         restoreStore.setAutoConnect(status.autoConnect && loggedIn)
         if (!loggedIn) {
             restoreStore.setWantConnected(false, null)
+        }
+        val prevState = VpnServiceStateRegistry.state.value
+        VpnServiceStateRegistry.updateFromStatus(status.vpnStatus, isAlwaysOn, isLockdownEnabled)
+        if (prevState != VpnServiceStateRegistry.state.value) {
+            VpnServiceStateRegistry.notifySystemSurfaces(this)
         }
         val isConnecting = status.vpnStatus is ManagerCmdOk.GetStatus.VpnStatus.Connecting
         updateConnectWakeLock(isConnecting)
@@ -415,6 +428,8 @@ class ObscuraVpnService : VpnService() {
     override fun onRevoke() {
         log.info("onRevoke", "V3qS5kil")
         stopTunnelFromUser()
+        VpnServiceStateRegistry.markDisconnected(isAlwaysOn, isLockdownEnabled)
+        VpnServiceStateRegistry.notifySystemSurfaces(this)
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onRevoke()
     }
@@ -428,8 +443,17 @@ class ObscuraVpnService : VpnService() {
         }
         wakeMonitor.setEnabled(false)
         packageMonitor.setEnabled(false)
+        VpnServiceStateRegistry.markDisconnected(isAlwaysOn, isLockdownEnabled)
+        VpnServiceStateRegistry.notifySystemSurfaces(this)
         log.info("onDestroy", "yNLRpqaN")
         stopTunnel()
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (::log.isInitialized) {
+            log.info("onTrimMemory level=$level", "mT9rKp4w")
+        }
     }
 
     private fun loadStatus(knownVersion: String?) {
@@ -453,7 +477,10 @@ class ObscuraVpnService : VpnService() {
         settingsStore.save(next)
         handler.post { packageMonitor.setEnabled(next.splitMode != SplitMode.Off) }
         val tunChanged =
-            old.customDns != next.customDns || old.splitMode != next.splitMode || old.splitApps != next.splitApps
+            old.customDns != next.customDns ||
+                old.splitMode != next.splitMode ||
+                old.splitApps != next.splitApps ||
+                old.excludedCidrs != next.excludedCidrs
         if (tunChanged) {
             refreshOsNetworkConfig()
         }
@@ -515,6 +542,9 @@ class ObscuraVpnService : VpnService() {
             setBlocking(false)
             plan.addresses.forEach { addAddress(it.address, it.prefix) }
             plan.routes.forEach { addRoute(it.address, it.prefix) }
+            plan.excludedRoutes.forEach {
+                excludeRoute(IpPrefix(InetAddresses.parseNumericAddress(it.address), it.prefix))
+            }
             plan.dnsServers.forEach { addDnsServer(it) }
             currentNetwork?.let { setUnderlyingNetworks(arrayOf(it)) }
             allowFamily(OsConstants.AF_INET)

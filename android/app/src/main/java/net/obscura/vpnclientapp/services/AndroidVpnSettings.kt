@@ -19,6 +19,7 @@ data class AndroidVpnSettings(
     val customDns: List<String> = emptyList(),
     val splitMode: SplitMode = SplitMode.Off,
     val splitApps: Set<String> = emptySet(),
+    val excludedCidrs: List<String> = emptyList(),
     val persistLogs: Boolean = false,
 )
 

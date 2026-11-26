@@ -177,6 +177,12 @@ class ObscuraVpnService : VpnService() {
     @Volatile private var currentNetwork: Network? = null
     private var reportedNetwork: RustNetwork? = null
 
+    /** The DNS servers of `currentNetwork`, for the "use the network's DNS" setting. */
+    @Volatile private var networkDns: List<String> = emptyList()
+
+    /** Whether the TUN that is up uses `networkDns`, so a change of them must rebuild it. */
+    @Volatile private var tunUsesNetworkDns = false
+
     private val connectivityManager
         get() = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
@@ -528,10 +534,15 @@ class ObscuraVpnService : VpnService() {
             TunPlan.of(
                 config = networkConfig,
                 settings = androidSettings,
-                ownPackage = packageName,
-                isUsableDns = ::isUsableDns,
-                isInstalled = ::isInstalled,
+                device =
+                    DeviceFacts(
+                        ownPackage = packageName,
+                        networkDns = networkDns,
+                        isUsableDns = ::isUsableDns,
+                        isInstalled = ::isInstalled,
+                    ),
             )
+        tunUsesNetworkDns = networkConfig.useSystemDns
         val pfd = buildVpnInterface(plan).establish()
         if (pfd == null) {
             log.error("VpnService.Builder.establish() returned null", "tR7uWe2x")
@@ -581,6 +592,7 @@ class ObscuraVpnService : VpnService() {
         }
 
     private fun updateInterface(network: Network?, linkProperties: LinkProperties?) {
+        updateNetworkDns(linkProperties?.dnsServers.orEmpty().mapNotNull { it.hostAddress })
         val next =
             if (network != null && linkProperties != null) {
                 readRustNetwork(network.networkHandle, linkProperties)
@@ -594,6 +606,19 @@ class ObscuraVpnService : VpnService() {
             rustFfi.setNetworkInterface(next.name, next.index, next.networkHandle, next.mtuHint)
         } else {
             rustFfi.unsetNetworkInterface()
+        }
+    }
+
+    /**
+     * A TUN that uses the network's DNS excludes their addresses from its routes, so new servers (another network, or a
+     * DHCP renewal) need a new TUN. A handover keeps the tunnel, so Rust would not set the config again by itself.
+     */
+    private fun updateNetworkDns(next: List<String>) {
+        if (next == networkDns) return
+        networkDns = next
+        if (tunUsesNetworkDns) {
+            log.info("network DNS servers changed, rebuilding the TUN", "Dn5wQr2k")
+            refreshOsNetworkConfig()
         }
     }
 }

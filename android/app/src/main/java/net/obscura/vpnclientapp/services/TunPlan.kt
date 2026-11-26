@@ -10,6 +10,14 @@ sealed interface AppScope {
     data class Only(val packages: List<String>) : AppScope
 }
 
+/** What `TunPlan.of` needs from the device: the app, the current network's DNS servers and two checks. */
+data class DeviceFacts(
+    val ownPackage: String,
+    val networkDns: List<String>,
+    val isUsableDns: (String) -> Boolean,
+    val isInstalled: (String) -> Boolean,
+)
+
 data class TunPlan(
     val mtu: Int,
     val addresses: List<Cidr>,
@@ -23,16 +31,24 @@ data class TunPlan(
         private const val IPV6_HOST_PREFIX = 128
         private val IP_LITERAL = Regex("[0-9.]+|[0-9a-fA-F:.]*:[0-9a-fA-F:.]*")
 
-        fun of(
-            config: OsNetworkConfig,
-            settings: AndroidVpnSettings,
-            ownPackage: String,
-            isUsableDns: (String) -> Boolean,
-            isInstalled: (String) -> Boolean,
-        ): TunPlan {
+        /**
+         * With `useSystemDns` the tunnel uses the network's DNS servers (`device.networkDns`), and their addresses
+         * leave the tunnel routes, so the queries go to the network's resolvers outside the tunnel. Without the
+         * exclusion they would enter the tunnel, where a resolver on the LAN (such as the Wi-Fi router) is not
+         * reachable.
+         */
+        fun of(config: OsNetworkConfig, settings: AndroidVpnSettings, device: DeviceFacts): TunPlan {
             val routes = config.routes.map { Cidr(it.address, it.prefix) }
-            val dns = dnsServers(config, settings, isUsableDns)
-            val excludedRoutes = settings.excludedCidrs.mapNotNull(::parseExcludedCidr).distinct()
+            val systemDns =
+                if (config.useSystemDns) {
+                    device.networkDns.map(::withoutScope).filter(device.isUsableDns).distinct()
+                } else {
+                    emptyList()
+                }
+            val dns = if (config.useSystemDns) systemDns else tunnelDnsServers(config, settings, device.isUsableDns)
+            val excludedRoutes =
+                (settings.excludedCidrs.mapNotNull(::parseExcludedCidr) + systemDns.mapNotNull(::parseExcludedCidr))
+                    .distinct()
             val plan =
                 TunPlan(
                     mtu = config.mtu,
@@ -41,15 +57,19 @@ data class TunPlan(
                             cidr(config.ipv4, IPV4_HOST_PREFIX),
                             cidr(config.ipv6, IPV6_HOST_PREFIX),
                         ),
-                    routes = routes + dnsHostRoutes(dns, routes),
+                    // The resolvers of the network stay outside the tunnel: no host route for them.
+                    routes = if (config.useSystemDns) routes else routes + dnsHostRoutes(dns, routes),
                     excludedRoutes = excludedRoutes,
                     dnsServers = dns,
-                    apps = appScope(settings, ownPackage, isInstalled),
+                    apps = appScope(settings, device.ownPackage, device.isInstalled),
                 )
             require(routes.isNotEmpty()) { "no routes" }
             require(plan.dnsServers.isNotEmpty() || config.useSystemDns) { "no usable DNS server" }
             return plan
         }
+
+        /** `fe80::1%wlan0` as `LinkProperties` gives it: the scope is not part of a route. */
+        private fun withoutScope(address: String): String = address.substringBefore('%')
 
         fun parseExcludedCidr(raw: String): Cidr? {
             val trimmed = raw.trim()
@@ -85,14 +105,11 @@ data class TunPlan(
             return out
         }
 
-        private fun dnsServers(
+        private fun tunnelDnsServers(
             config: OsNetworkConfig,
             settings: AndroidVpnSettings,
             isUsableDns: (String) -> Boolean,
-        ): List<String> {
-            if (config.useSystemDns) return emptyList()
-            return settings.customDns.filter(isUsableDns).ifEmpty { config.dns.filter(isUsableDns) }
-        }
+        ): List<String> = settings.customDns.filter(isUsableDns).ifEmpty { config.dns.filter(isUsableDns) }
 
         private fun dnsHostRoutes(dns: List<String>, routes: List<Cidr>): List<Cidr> = dns.mapNotNull { server ->
             val address = ipLiteral(server) ?: return@mapNotNull null

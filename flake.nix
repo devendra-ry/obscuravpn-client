@@ -75,10 +75,11 @@
         };
         androidRustEnv = {
           ANDROID_NDK_ROOT = "${android.ndk-bundle}/libexec/android-sdk/ndk-bundle";
-          # The API level cargo-ndk links against; keep it equal to minSdk in android/app/build.gradle.kts. cargo-ndk's
-          # default (21) has no `android_setsocknetwork` (API 23) in libandroid.so, so the linker would drop libandroid
-          # and leave that symbol unresolved: the .so then fails to load (BIND_NOW).
-          CARGO_NDK_PLATFORM = "35";
+          # The API level cargo-ndk links against: the highest that the NDK above ships (r26: 21 to 34), and at most
+          # minSdk in android/app/build.gradle.kts. cargo-ndk's default (21) has no `android_setsocknetwork` (API 23)
+          # in libandroid.so, so the linker would drop libandroid and leave that symbol unresolved: the .so then fails
+          # to load (BIND_NOW).
+          CARGO_NDK_PLATFORM = "34";
         };
 
         gradleOpts = [ "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidBuildTools}/aapt2" ];

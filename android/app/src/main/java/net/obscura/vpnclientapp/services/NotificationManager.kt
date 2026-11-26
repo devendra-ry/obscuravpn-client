@@ -144,20 +144,19 @@ internal class NotificationManager(private val context: Context) {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
 
-    fun notify(vpnStatus: ManagerCmdOk.GetStatus.VpnStatus?, prepareResult: PrepareResult) =
-        runCatching {
-                // Defensive permission check in case user revokes permissions.
-                if (
-                    ContextCompat.checkSelfPermission(
-                        this.context,
-                        Manifest.permission.POST_NOTIFICATIONS,
-                    ) == PackageManager.PERMISSION_GRANTED
-                ) {
-                    this.manager.notify(
-                        NOTIFICATION_ID,
-                        this.buildNotification(vpnStatus, prepareResult),
-                    )
-                }
-            }
-            .onFailure { log.error("failed to update notification: ${it.message}") }
+    fun notify(vpnStatus: ManagerCmdOk.GetStatus.VpnStatus?, prepareResult: PrepareResult) = runCatching {
+        // Defensive permission check in case user revokes permissions.
+        if (
+            ContextCompat.checkSelfPermission(
+                this.context,
+                Manifest.permission.POST_NOTIFICATIONS,
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            this.manager.notify(
+                NOTIFICATION_ID,
+                this.buildNotification(vpnStatus, prepareResult),
+            )
+        }
+    }
+        .onFailure { log.error("failed to update notification: ${it.message}") }
 }

@@ -18,17 +18,17 @@ import net.obscura.vpnclientapp.sharing.DebugBundleFileProvider
 private val log = Logger("DebugBundle")
 
 fun collectBundleInfo(context: Context): ManagerCmd.CreateDebugBundle.BundleInfo {
-    val memoryInfo =
-        runCatching {
-                val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
-            }
-            .onFailure { log.error("failed to get memory info: ${it.message}") }
-            .getOrNull()
-    val powerManager =
-        runCatching { context.getSystemService(Context.POWER_SERVICE) as PowerManager }
-            .onFailure { log.error("failed to get power manager: ${it.message}") }
-            .getOrNull()
+    val memoryInfo = runCatching {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        ActivityManager.MemoryInfo().also { activityManager.getMemoryInfo(it) }
+    }
+        .onFailure { log.error("failed to get memory info: ${it.message}") }
+        .getOrNull()
+    val powerManager = runCatching {
+        context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    }
+        .onFailure { log.error("failed to get power manager: ${it.message}") }
+        .getOrNull()
     val uptimeMs = SystemClock.elapsedRealtime()
     return ManagerCmd.CreateDebugBundle.BundleInfo(
         androidSdk = Build.VERSION.SDK_INT,

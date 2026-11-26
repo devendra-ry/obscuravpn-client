@@ -27,10 +27,10 @@ class PreferencesManager(context: Context, private val onPreferencesChanged: (Pr
             internal fun decode(sharedPreferences: SharedPreferences?): Preferences {
                 val colorScheme =
                     runCatching {
-                            sharedPreferences?.getString(KEY_COLOR_SCHEME, null)?.let {
-                                jsonConfig.decodeFromString<OsStatus.ColorScheme>(it)
-                            }
+                        sharedPreferences?.getString(KEY_COLOR_SCHEME, null)?.let {
+                            jsonConfig.decodeFromString<OsStatus.ColorScheme>(it)
                         }
+                    }
                         .onFailure { log.error("failed to read $KEY_COLOR_SCHEME: ${it.message}") }
                         .getOrNull() ?: OsStatus.ColorScheme.Auto
                 val secureAll = sharedPreferences?.getBoolean(KEY_SECURE_ALL, false) ?: false

@@ -59,7 +59,7 @@ class App : Application() {
                             return@penaltyListener
                         strictModeLog.warn("thread policy violation", tr = violation)
                     }
-                    .build()
+                    .build(),
             )
             StrictMode.setVmPolicy(
                 StrictMode.VmPolicy.Builder()
@@ -73,7 +73,7 @@ class App : Application() {
                         if (violation is UntaggedSocketViolation) return@penaltyListener
                         strictModeLog.warn("VM policy violation", tr = violation)
                     }
-                    .build()
+                    .build(),
             )
         }
     }

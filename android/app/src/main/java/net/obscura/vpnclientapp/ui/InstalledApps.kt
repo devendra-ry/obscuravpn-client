@@ -1,6 +1,7 @@
 package net.obscura.vpnclientapp.ui
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import kotlinx.coroutines.Dispatchers
@@ -13,11 +14,18 @@ object InstalledApps {
         val isSystem: Boolean,
     )
 
+    /**
+     * The apps with a launcher entry. This is exactly what the manifest's `<queries>` launcher intent makes visible on
+     * Android 11+, so the list does not depend on QUERY_ALL_PACKAGES.
+     */
     suspend fun query(context: Context, ownPackage: String): List<Item> =
         withContext(Dispatchers.IO) {
             val pm = context.packageManager
-            pm.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+            val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            pm.queryIntentActivities(launcher, PackageManager.ResolveInfoFlags.of(0))
                 .asSequence()
+                .map { it.activityInfo.applicationInfo }
+                .distinctBy { it.packageName }
                 .filter { it.packageName != ownPackage }
                 .map { info ->
                     val isSystem =

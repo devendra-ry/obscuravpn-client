@@ -94,13 +94,13 @@ data class TunPlan(
             return settings.customDns.filter(isUsableDns).ifEmpty { config.dns.filter(isUsableDns) }
         }
 
-        private fun dnsHostRoutes(dns: List<String>, routes: List<Cidr>): List<Cidr> =
-            dns.mapNotNull { server ->
-                val address = ipLiteral(server) ?: return@mapNotNull null
-                val covered =
-                    routes.any { route -> ipLiteral(route.address)?.let { covers(it, route.prefix, address) } == true }
-                if (covered) null else Cidr(server, address.size * Byte.SIZE_BITS)
+        private fun dnsHostRoutes(dns: List<String>, routes: List<Cidr>): List<Cidr> = dns.mapNotNull { server ->
+            val address = ipLiteral(server) ?: return@mapNotNull null
+            val covered = routes.any { route ->
+                ipLiteral(route.address)?.let { covers(it, route.prefix, address) } == true
             }
+            if (covered) null else Cidr(server, address.size * Byte.SIZE_BITS)
+        }
 
         private fun ipLiteral(text: String): ByteArray? {
             if (!IP_LITERAL.matches(text) || (':' !in text && text.count { it == '.' } != 3)) return null

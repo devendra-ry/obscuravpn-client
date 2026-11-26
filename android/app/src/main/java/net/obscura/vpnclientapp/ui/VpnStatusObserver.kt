@@ -34,7 +34,7 @@ class VpnStatusObserver(
                 while (this.isActive) {
                     try {
                         val status =
-                            JsonFfiBroadcastReceiver.waitForResponse(
+                            JsonFfiResults.waitForResponse(
                                     this@VpnStatusObserver.binder,
                                     jsonConfig.encodeToString(ManagerCmd.GetStatus(knownVersion)),
                                 )

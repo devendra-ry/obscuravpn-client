@@ -64,7 +64,7 @@ fun Context.startVpnService(exitSelector: String?) =
             Intent(this, ObscuraVpnService::class.java).apply {
                 this.action = ACTION_START_TUNNEL
                 this.putStartTunnelExtras(exitSelector)
-            }
+            },
         )
         Result.success(Unit)
     } catch (e: SecurityException) {

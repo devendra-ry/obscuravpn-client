@@ -78,14 +78,13 @@ class SensitiveClipboard(private val context: Context, private val scope: Corout
             }
         clipboard.setPrimaryClip(clip)
         clearJob?.cancel()
-        clearJob =
-            scope.launch {
-                delay(CLEAR_DELAY_MS)
-                val current = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
-                if (current == accountNumber) {
-                    clipboard.clearPrimaryClip()
-                }
+        clearJob = scope.launch {
+            delay(CLEAR_DELAY_MS)
+            val current = clipboard.primaryClip?.getItemAt(0)?.text?.toString()
+            if (current == accountNumber) {
+                clipboard.clearPrimaryClip()
             }
+        }
     }
 
     private companion object {

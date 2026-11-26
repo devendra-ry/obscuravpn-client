@@ -37,13 +37,13 @@ class AndroidVpnSettingsStore(dir: File) {
     @Synchronized
     fun save(settings: AndroidVpnSettings) {
         runCatching {
-                val tmp = File(file.parentFile, "android_settings.json.tmp")
-                tmp.writeText(jsonConfig.encodeToString(settings))
-                if (!tmp.renameTo(file)) {
-                    file.writeText(jsonConfig.encodeToString(settings))
-                    tmp.delete()
-                }
+            val tmp = File(file.parentFile, "android_settings.json.tmp")
+            tmp.writeText(jsonConfig.encodeToString(settings))
+            if (!tmp.renameTo(file)) {
+                file.writeText(jsonConfig.encodeToString(settings))
+                tmp.delete()
             }
+        }
             .onFailure { log.error("failed to save android settings: ${it.message}") }
     }
 }

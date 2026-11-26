@@ -59,7 +59,7 @@ class MainActivity : AppCompatActivity(), ServiceConnection {
                         OsStatus.ColorScheme.Auto -> AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
                         OsStatus.ColorScheme.Dark -> AppCompatDelegate.MODE_NIGHT_YES
                         OsStatus.ColorScheme.Light -> AppCompatDelegate.MODE_NIGHT_NO
-                    }
+                    },
                 )
                 this@MainActivity.osStatusManager.update { this.colorScheme = preferences.colorScheme }
             }

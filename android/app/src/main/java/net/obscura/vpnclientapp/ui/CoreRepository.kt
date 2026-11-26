@@ -99,110 +99,105 @@ class CoreRepository(
             .onFailure { log.warn("failed to read android settings: ${it.message}") }
     }
 
-    private fun launchStatusLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
-        scope.launch {
-            owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                var knownVersion: String? = null
-                while (isActive) {
-                    runCatching {
-                            val raw =
-                                invokeFfi(
-                                    """{"getStatus":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
-                                    null,
-                                )
-                            val next = jsonConfig.decodeFromString<CoreStatus>(raw)
-                            knownVersion = next.version
-                            _status.value = next
-                            publishOsVpnStatus(next.vpnStatus)
-                            maybeAutoConnect(next)
-                        }
-                        .onFailure { e ->
-                            if (e is CancellationException) throw e
-                            log.error("status loop error: ${e.message}")
-                            delay(500.milliseconds)
-                        }
-                    delay(10.milliseconds)
+    private fun launchStatusLoop(owner: LifecycleOwner, scope: CoroutineScope): Job = scope.launch {
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var knownVersion: String? = null
+            while (isActive) {
+                runCatching {
+                    val raw =
+                        invokeFfi(
+                            """{"getStatus":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
+                            null,
+                        )
+                    val next = jsonConfig.decodeFromString<CoreStatus>(raw)
+                    knownVersion = next.version
+                    _status.value = next
+                    publishOsVpnStatus(next.vpnStatus)
+                    maybeAutoConnect(next)
                 }
-            }
-        }
-
-    private fun launchExitListLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
-        scope.launch {
-            owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                var knownVersion: String? = null
-                while (isActive) {
-                    runCatching {
-                            val raw =
-                                invokeFfi(
-                                    """{"getExitList":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
-                                    null,
-                                )
-                            val list = jsonConfig.decodeFromString<CachedList<OneExit>>(raw)
-                            knownVersion = list.version
-                            _exits.value = ListLoadState.Ready(list.value)
-                        }
-                        .onFailure { e ->
-                            if (e is CancellationException) throw e
-                            if (_exits.value is ListLoadState.Loading) {
-                                _exits.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
-                            }
-                            delay(3.seconds)
-                        }
-                    delay(50.milliseconds)
-                }
-            }
-        }
-
-    private fun launchRelayListLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
-        scope.launch {
-            owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                var knownVersion: String? = null
-                while (isActive) {
-                    runCatching {
-                            val ver = knownVersion?.let { "\"$it\"" } ?: "null"
-                            val raw = invokeFfi("""{"getRelayList":{"knownVersion":$ver}}""", null)
-                            val list = jsonConfig.decodeFromString<CachedList<OneRelay>>(raw)
-                            knownVersion = list.version
-                            _relays.value = ListLoadState.Ready(list.value)
-                        }
-                        .onFailure { e ->
-                            if (e is CancellationException) throw e
-                            if (_relays.value is ListLoadState.Loading) {
-                                _relays.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
-                            }
-                            delay(3.seconds)
-                        }
-                    delay(50.milliseconds)
-                }
-            }
-        }
-
-    private fun launchStatsLoop(owner: LifecycleOwner, scope: CoroutineScope): Job =
-        scope.launch {
-            owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                while (isActive) {
-                    if (_status.value?.vpnStatus?.connected != null) {
-                        runCatching {
-                            val raw = invokeFfi("""{"getTrafficStats":{}}""", 5_000L)
-                            _trafficStats.value = jsonConfig.decodeFromString<TrafficStats>(raw)
-                        }
-                    } else {
-                        _trafficStats.value = null
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        log.error("status loop error: ${e.message}")
+                        delay(500.milliseconds)
                     }
-                    delay(1.seconds)
-                }
+                delay(10.milliseconds)
             }
         }
+    }
 
-    private fun launchPurchaseUploader(owner: LifecycleOwner, scope: CoroutineScope): Job =
-        scope.launch {
-            owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-                val purchaseTokens = activity.billingFacade.fetchPurchaseTokens() ?: return@repeatOnLifecycle
-                for (token in purchaseTokens) {
-                    runCatching { uploadPurchaseToken(binder, token, null) }
+    private fun launchExitListLoop(owner: LifecycleOwner, scope: CoroutineScope): Job = scope.launch {
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var knownVersion: String? = null
+            while (isActive) {
+                runCatching {
+                    val raw =
+                        invokeFfi(
+                            """{"getExitList":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
+                            null,
+                        )
+                    val list = jsonConfig.decodeFromString<CachedList<OneExit>>(raw)
+                    knownVersion = list.version
+                    _exits.value = ListLoadState.Ready(list.value)
                 }
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        if (_exits.value is ListLoadState.Loading) {
+                            _exits.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
+                        }
+                        delay(3.seconds)
+                    }
+                delay(50.milliseconds)
             }
         }
+    }
+
+    private fun launchRelayListLoop(owner: LifecycleOwner, scope: CoroutineScope): Job = scope.launch {
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            var knownVersion: String? = null
+            while (isActive) {
+                runCatching {
+                    val ver = knownVersion?.let { "\"$it\"" } ?: "null"
+                    val raw = invokeFfi("""{"getRelayList":{"knownVersion":$ver}}""", null)
+                    val list = jsonConfig.decodeFromString<CachedList<OneRelay>>(raw)
+                    knownVersion = list.version
+                    _relays.value = ListLoadState.Ready(list.value)
+                }
+                    .onFailure { e ->
+                        if (e is CancellationException) throw e
+                        if (_relays.value is ListLoadState.Loading) {
+                            _relays.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
+                        }
+                        delay(3.seconds)
+                    }
+                delay(50.milliseconds)
+            }
+        }
+    }
+
+    private fun launchStatsLoop(owner: LifecycleOwner, scope: CoroutineScope): Job = scope.launch {
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (isActive) {
+                if (_status.value?.vpnStatus?.connected != null) {
+                    runCatching {
+                        val raw = invokeFfi("""{"getTrafficStats":{}}""", 5_000L)
+                        _trafficStats.value = jsonConfig.decodeFromString<TrafficStats>(raw)
+                    }
+                } else {
+                    _trafficStats.value = null
+                }
+                delay(1.seconds)
+            }
+        }
+    }
+
+    private fun launchPurchaseUploader(owner: LifecycleOwner, scope: CoroutineScope): Job = scope.launch {
+        owner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            val purchaseTokens = activity.billingFacade.fetchPurchaseTokens() ?: return@repeatOnLifecycle
+            for (token in purchaseTokens) {
+                runCatching { uploadPurchaseToken(binder, token, null) }
+            }
+        }
+    }
 
     private fun publishOsVpnStatus(vpnStatus: CoreVpnStatus) {
         val osState =
@@ -228,7 +223,7 @@ class CoreRepository(
     }
 
     suspend fun invokeFfi(cmdJson: String, timeoutMs: Long? = 15_000L): String {
-        val deferred = JsonFfiBroadcastReceiver.waitForResponse(binder, cmdJson)
+        val deferred = JsonFfiResults.waitForResponse(binder, cmdJson)
         return if (timeoutMs != null) {
             withTimeout(timeoutMs) { deferred.await() }
         } else {
@@ -258,7 +253,7 @@ class CoreRepository(
                     ManagerCmd.SetTunnelArgs(
                         args = jsonConfig.decodeFromString(jsonConfig.encodeToString(args)),
                         active = null,
-                    )
+                    ),
                 )
             invokeFfi(json)
             Result.success(Unit)

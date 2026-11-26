@@ -262,10 +262,9 @@ private fun StatusHeadline(
             accountExpired -> "Your account has expired"
             vpn.connecting != null -> {
                 val city = vpn.connecting.tunnelArgs.exit.city
-                val cityName =
-                    city?.let { c ->
-                        exits.find { it.cityCode == c.cityCode && it.countryCode == c.countryCode }?.cityName
-                    }
+                val cityName = city?.let { c ->
+                    exits.find { it.cityCode == c.cityCode && it.countryCode == c.countryCode }?.cityName
+                }
                 if (vpn.connecting.reconnecting) "Reconnecting to Obscura" else "Connecting to ${cityName ?: "Obscura"}"
             }
             vpn.connected != null -> "Connected to Obscura"

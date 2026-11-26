@@ -30,7 +30,7 @@ import net.obscura.vpnclientapp.client.ManagerCmd
 import net.obscura.vpnclientapp.client.ManagerCmdOk
 import net.obscura.vpnclientapp.client.RustFfi
 import net.obscura.vpnclientapp.client.jsonConfig
-import net.obscura.vpnclientapp.ui.JsonFfiBroadcastReceiver
+import net.obscura.vpnclientapp.ui.JsonFfiResults
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -85,7 +85,7 @@ class ObscuraVpnService : VpnService() {
             val future = CompletableFuture<String>()
             service.rustFfi.jsonFfi(command, future)
             future.handle { value: String?, exception: Throwable? ->
-                JsonFfiBroadcastReceiver.deliverInProcess(id, value, exception)
+                JsonFfiResults.deliverInProcess(id, value, exception)
             }
         }
 
@@ -304,24 +304,23 @@ class ObscuraVpnService : VpnService() {
         }
     }
 
-    private fun promoteToForeground(prepareResult: PrepareResult): Result<Unit> =
-        runCatching {
-                if (prepareResult == PrepareResult.Ready) {
-                    this.startForeground(
-                        NotificationManager.NOTIFICATION_ID,
-                        this.notificationManager.buildNotification(this.vpnStatus, prepareResult),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED,
-                    )
-                } else {
-                    throw RuntimeException("VPN not prepared")
-                }
-            }
-            .onFailure {
-                log.error(
-                    "failed to promote service to foreground: ${it.message}",
-                    "GKs2Deov",
-                )
-            }
+    private fun promoteToForeground(prepareResult: PrepareResult): Result<Unit> = runCatching {
+        if (prepareResult == PrepareResult.Ready) {
+            this.startForeground(
+                NotificationManager.NOTIFICATION_ID,
+                this.notificationManager.buildNotification(this.vpnStatus, prepareResult),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED,
+            )
+        } else {
+            throw RuntimeException("VPN not prepared")
+        }
+    }
+        .onFailure {
+            log.error(
+                "failed to promote service to foreground: ${it.message}",
+                "GKs2Deov",
+            )
+        }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         log.info("onStartCommand $intent ${intent?.action} $flags $startId", "C9rsG0uh")

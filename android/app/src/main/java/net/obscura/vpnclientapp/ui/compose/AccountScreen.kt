@@ -228,7 +228,7 @@ private fun AccountNumberCard(accountId: String) {
                         clipboard.copyAccountNumber(accountId)
                         copied = true
                     }
-                }
+                },
             ) {
                 Icon(AppIcons.Copy, contentDescription = "Copy", modifier = Modifier.size(20.dp))
             }

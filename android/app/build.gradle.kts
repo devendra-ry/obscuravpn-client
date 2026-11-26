@@ -22,12 +22,16 @@ extensions.configure<ApplicationExtension> {
             "net.obscura.vpnclientapp" + (providers.gradleProperty("obscura.applicationIdSuffix").orNull ?: ".fork")
         // Fork build: Android 15 and newer only.
         minSdk = 35
+        // API 37 needs compileSdk 37, which needs AGP 9.1+; AGP is pinned to what nixpkgs ships (see lint.xml).
+        //noinspection OldTargetApi
         targetSdk = 36
         versionCode = project.getVersionCode(project.rootDir)
         versionName = project.getVersionName(project.rootDir)
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // Only the arm64-v8a Rust library is built and shipped: phones only, no x86_64 emulators or ChromeOS devices.
+        //noinspection ChromeOsAbiSupport
         ndk { abiFilters += listOf("arm64-v8a") }
     }
 

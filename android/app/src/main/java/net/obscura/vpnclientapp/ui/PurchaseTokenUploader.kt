@@ -28,7 +28,7 @@ private suspend fun associatePurchaseToken(
 ): AssociatePurchaseTokenResult =
     try {
         log.debug("trying to associate purchase token with account: $purchaseToken")
-        JsonFfiBroadcastReceiver.waitForResponse(
+        JsonFfiResults.waitForResponse(
                 binder,
                 jsonConfig.encodeToString(ManagerCmd.ApiGoogleAssociateAccount(purchaseToken, promoCode)),
             )

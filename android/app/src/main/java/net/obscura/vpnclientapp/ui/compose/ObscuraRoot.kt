@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import net.obscura.vpnclientapp.BuildConfig
 import net.obscura.vpnclientapp.R
 import net.obscura.vpnclientapp.client.CoreStatus
+import net.obscura.vpnclientapp.client.ExitSelector
 import net.obscura.vpnclientapp.client.OneExit
 import net.obscura.vpnclientapp.client.OneRelay
 import net.obscura.vpnclientapp.client.RelaySelector
@@ -40,7 +41,9 @@ import net.obscura.vpnclientapp.ui.ListLoadState
 import net.obscura.vpnclientapp.ui.OsStatus
 import net.obscura.vpnclientapp.ui.OsStatusManager
 import net.obscura.vpnclientapp.ui.PreferencesManager
+import net.obscura.vpnclientapp.ui.RecentExit
 import net.obscura.vpnclientapp.ui.SecureWindowEffect
+import net.obscura.vpnclientapp.ui.pushRecent
 
 private enum class MainTab(
     val navView: OsStatus.NavigationView,
@@ -171,10 +174,23 @@ private fun MainShell(deps: RootHostDeps, preferences: PreferencesManager.Prefer
             onUpdatePreferences = { next -> scope.launch { deps.preferencesManager.write(next) } },
         )
 
+    ShellEffects(deps, preferences)
     Scaffold(
         bottomBar = { ObscuraBottomBar(currentTab = currentTab, onSelect = selectTab) },
     ) { padding ->
         MainTabContent(tab = currentTab, state = shellState, padding = padding, callbacks = callbacks)
+    }
+}
+
+/** Keeps the repository in step with preferences, and remembers each city connected to for Recents. */
+@Composable
+private fun ShellEffects(deps: RootHostDeps, preferences: PreferencesManager.Preferences) {
+    LaunchedEffect(preferences.autoSwitchProtocol) { deps.repo.autoSwitchProtocol = preferences.autoSwitchProtocol }
+    val exit = deps.status.vpnStatus.connected?.exit
+    LaunchedEffect(exit?.countryCode, exit?.cityCode) {
+        if (exit == null) return@LaunchedEffect
+        val next = pushRecent(preferences.recentExits, RecentExit(exit.countryCode, exit.cityCode, exit.cityName))
+        if (next != preferences.recentExits) deps.preferencesManager.write(preferences.copy(recentExits = next))
     }
 }
 
@@ -231,6 +247,8 @@ private fun ConnectionTabView(callbacks: ShellCallbacks, state: ShellUiState, pa
     val scope = rememberCoroutineScope()
     val exitItems = (state.exitsState as? ListLoadState.Ready)?.items.orEmpty()
     val relayItems = (state.relaysState as? ListLoadState.Ready)?.items.orEmpty()
+    val fallbackNotice by callbacks.repo.protocolNotice.collectAsState()
+    val connectionLost by callbacks.repo.connectionLost.collectAsState()
     ConnectionScreen(
         params =
             ConnectionUiParams(
@@ -240,6 +258,9 @@ private fun ConnectionTabView(callbacks: ShellCallbacks, state: ShellUiState, pa
                 stats = state.stats,
                 internetAvailable = state.osSnapshot.internetAvailable,
                 startError = state.startError,
+                recents = state.preferences.recentExits,
+                fallbackNotice = fallbackNotice,
+                connectionLost = connectionLost,
             ),
         actions =
             ConnectionActions(
@@ -251,6 +272,17 @@ private fun ConnectionTabView(callbacks: ShellCallbacks, state: ShellUiState, pa
                 onSwitchMode = { mode ->
                     scope.launch { callbacks.repo.updateTunnelArgs(state.status.tunnelArgs.copy(mode = mode)) }
                 },
+                onConnectRecent = { recent ->
+                    val exit = ExitSelector.forCity(recent.countryCode, recent.cityCode)
+                    scope.launch {
+                        if (state.status.vpnStatus.disconnected == null) {
+                            callbacks.repo.updateTunnelArgs(state.status.tunnelArgs.copy(exit = exit))
+                        } else {
+                            callbacks.repo.connect(exit = exit)
+                        }
+                    }
+                },
+                onDismissNotice = callbacks.repo::dismissProtocolNotice,
                 onUseFastestRelay = {
                     scope.launch {
                         callbacks.repo.updateTunnelArgs(state.status.tunnelArgs.copy(relay = RelaySelector.Any))

@@ -42,9 +42,12 @@ import net.obscura.vpnclientapp.client.RelaySelector
 import net.obscura.vpnclientapp.client.ServiceStatusOutput
 import net.obscura.vpnclientapp.client.TrafficStats
 import net.obscura.vpnclientapp.client.TunnelArgs
+import net.obscura.vpnclientapp.client.TunnelMode
 import net.obscura.vpnclientapp.client.jsonConfig
 import net.obscura.vpnclientapp.services.AndroidVpnSettings
 import net.obscura.vpnclientapp.services.IObscuraVpnService
+import net.obscura.vpnclientapp.services.connectionLost
+import net.obscura.vpnclientapp.ui.compose.modeLabel
 
 private val log = Logger(CoreRepository::class)
 
@@ -79,6 +82,23 @@ class CoreRepository(
 
     private val _serviceStatus = MutableStateFlow<ServiceStatusOutput?>(null)
     val serviceStatus: StateFlow<ServiceStatusOutput?> = _serviceStatus.asStateFlow()
+
+    private val _protocolNotice = MutableStateFlow<String?>(null)
+
+    /** Set when the protocol was switched after a connection failed; the VPN tab shows it until dismissed. */
+    val protocolNotice: StateFlow<String?> = _protocolNotice.asStateFlow()
+
+    /** Whether a failed connection moves to the next protocol by itself (Settings › Protocol). */
+    @Volatile var autoSwitchProtocol: Boolean = true
+
+    private val _connectionLost = MutableStateFlow(false)
+
+    /** The tunnel was up and is now down while the core brings it back: the VPN tab turns red. */
+    val connectionLost: StateFlow<Boolean> = _connectionLost.asStateFlow()
+    private var wasConnected = false
+
+    /** Protocols already tried in the current connection attempt, so a fallback never loops. */
+    private val fallbackTried = HashSet<TunnelMode>()
 
     private val jobs = ArrayList<Job>()
     private var autoConnectEligible = isFreshLaunch
@@ -121,6 +141,8 @@ class CoreRepository(
                     _status.value = next
                     publishOsVpnStatus(next.vpnStatus)
                     maybeAutoConnect(next)
+                    trackConnectionLost(next.vpnStatus)
+                    maybeSwitchProtocol(next)
                 }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
@@ -233,6 +255,48 @@ class CoreRepository(
         if (shouldAutoConnect) {
             activity.vpnPermissionRequestManager.requestVpnStart(null)
         }
+    }
+
+    private suspend fun maybeSwitchProtocol(status: CoreStatus) {
+        val connecting = status.vpnStatus.connecting
+        if (connecting == null) {
+            fallbackTried.clear()
+            return
+        }
+        val code = connecting.connectError ?: return
+        val mode = connecting.tunnelArgs.mode
+        fallbackTried += mode
+        if (!autoSwitchProtocol) return
+        val anyRelay = connecting.tunnelArgs.relay == RelaySelector.Any
+        val fallback = nextFallback(code, mode, anyRelay, fallbackTried) ?: return
+        log.info("falling back after $code in $mode: $fallback", "Pf6bSw2q")
+        val (args, notice) =
+            when (fallback) {
+                is Fallback.Protocol -> {
+                    fallbackTried += fallback.mode
+                    status.tunnelArgs.copy(mode = fallback.mode) to
+                        "${modeLabel(mode)} could not connect on this network, so Obscura switched to " +
+                            "${modeLabel(fallback.mode)}."
+                }
+                Fallback.FastestRelay ->
+                    status.tunnelArgs.copy(relay = RelaySelector.Any) to
+                        "Your chosen entry relay could not be reached, so Obscura is using the fastest relay."
+            }
+        updateTunnelArgs(args).onSuccess { _protocolNotice.value = notice }
+    }
+
+    private fun trackConnectionLost(vpn: CoreVpnStatus) {
+        val connecting = vpn.connecting
+        _connectionLost.value =
+            connecting != null && connectionLost(wasConnected, connecting.reconnecting, connecting.connectError)
+        when {
+            vpn.connected != null -> wasConnected = true
+            vpn.disconnected != null -> wasConnected = false
+        }
+    }
+
+    fun dismissProtocolNotice() {
+        _protocolNotice.value = null
     }
 
     suspend fun invokeFfi(cmdJson: String, timeoutMs: Long? = 15_000L): String {

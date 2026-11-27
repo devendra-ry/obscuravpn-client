@@ -19,10 +19,14 @@ class PreferencesManager(context: Context, private val onPreferencesChanged: (Pr
     data class Preferences(
         val colorScheme: OsStatus.ColorScheme = OsStatus.ColorScheme.Auto,
         val secureAllScreens: Boolean = false,
+        val autoSwitchProtocol: Boolean = true,
+        val recentExits: List<RecentExit> = emptyList(),
     ) {
         companion object {
             private const val KEY_COLOR_SCHEME = "color-scheme"
             private const val KEY_SECURE_ALL = "secure-all-screens"
+            private const val KEY_AUTO_SWITCH = "auto-switch-protocol"
+            private const val KEY_RECENT_EXITS = "recent-exits"
 
             internal fun decode(sharedPreferences: SharedPreferences?): Preferences {
                 val colorScheme =
@@ -34,13 +38,24 @@ class PreferencesManager(context: Context, private val onPreferencesChanged: (Pr
                         .onFailure { log.error("failed to read $KEY_COLOR_SCHEME: ${it.message}") }
                         .getOrNull() ?: OsStatus.ColorScheme.Auto
                 val secureAll = sharedPreferences?.getBoolean(KEY_SECURE_ALL, false) ?: false
-                return Preferences(colorScheme, secureAll)
+                val autoSwitch = sharedPreferences?.getBoolean(KEY_AUTO_SWITCH, true) ?: true
+                val recents =
+                    runCatching {
+                        sharedPreferences?.getString(KEY_RECENT_EXITS, null)?.let {
+                            jsonConfig.decodeFromString<List<RecentExit>>(it)
+                        }
+                    }
+                        .onFailure { log.error("failed to read $KEY_RECENT_EXITS: ${it.message}") }
+                        .getOrNull() ?: emptyList()
+                return Preferences(colorScheme, secureAll, autoSwitch, recents)
             }
         }
 
         internal fun encode(editor: SharedPreferences.Editor) {
             editor.putString(KEY_COLOR_SCHEME, jsonConfig.encodeToString(this.colorScheme))
             editor.putBoolean(KEY_SECURE_ALL, this.secureAllScreens)
+            editor.putBoolean(KEY_AUTO_SWITCH, this.autoSwitchProtocol)
+            editor.putString(KEY_RECENT_EXITS, jsonConfig.encodeToString(this.recentExits))
         }
     }
 

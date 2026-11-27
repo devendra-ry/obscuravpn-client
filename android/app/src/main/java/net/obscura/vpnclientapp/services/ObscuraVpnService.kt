@@ -74,6 +74,7 @@ private fun exitReasonLabel(reason: Int): String =
 const val PATH_REQUEST_VPN_START = "requestVpnStart"
 
 private const val CONNECT_WAKELOCK_TIMEOUT_MS = 60_000L
+private const val LOSS_ALERT_DELAY_MS = 10_000L
 
 @SuppressLint("VpnServicePolicy")
 class ObscuraVpnService : VpnService() {
@@ -407,7 +408,9 @@ class ObscuraVpnService : VpnService() {
     private fun onStatusUpdated(status: ManagerCmdOk.GetStatus) {
         if (destroyed) return
         log.info("status updated $status", "xXx7PxdD")
+        val previous = this.vpnStatus
         this.vpnStatus = status.vpnStatus
+        updateLossAlert(previous, status.vpnStatus)
         val loggedIn = status.accountId != null && !status.inNewAccountFlow
         val loggedInChanged = restoreStore.setLoggedIn(loggedIn)
         restoreStore.setAutoConnect(status.autoConnect && loggedIn)
@@ -431,6 +434,50 @@ class ObscuraVpnService : VpnService() {
         this.loadStatus(status.version)
     }
 
+    /** The tunnel was up since the last connect, so going down now is a loss. */
+    private var wasConnected = false
+
+    /** A "connection lost" alert is scheduled or showing. */
+    private var lossAlertArmed = false
+
+    private val showReconnectingAlert = Runnable {
+        if (!destroyed) notificationManager.showConnectionLost(stopped = false, prepareResult = PrepareResult.Ready)
+    }
+
+    /**
+     * Proton-style warning when the tunnel drops; a reconnect that finishes within [LOSS_ALERT_DELAY_MS] stays quiet.
+     */
+    private fun updateLossAlert(
+        previous: ManagerCmdOk.GetStatus.VpnStatus?,
+        now: ManagerCmdOk.GetStatus.VpnStatus,
+    ) {
+        val alert = lossAlertFor(previous, now, restoreStore.wantConnected, wasConnected)
+        when (now) {
+            is ManagerCmdOk.GetStatus.VpnStatus.Connected -> wasConnected = true
+            is ManagerCmdOk.GetStatus.VpnStatus.Disconnected -> wasConnected = false
+            is ManagerCmdOk.GetStatus.VpnStatus.Connecting -> Unit
+        }
+        when (alert) {
+            LossAlert.RECONNECTING ->
+                if (!lossAlertArmed) {
+                    lossAlertArmed = true
+                    handler.postDelayed(showReconnectingAlert, LOSS_ALERT_DELAY_MS)
+                }
+            LossAlert.DISCONNECTED -> {
+                lossAlertArmed = false
+                handler.removeCallbacks(showReconnectingAlert)
+                log.warn("tunnel stopped while it should be up", "Lz4kAl7c")
+                notificationManager.showConnectionLost(stopped = true, prepareResult = this.prepareVpnService())
+            }
+            LossAlert.CLEAR -> {
+                lossAlertArmed = false
+                handler.removeCallbacks(showReconnectingAlert)
+                notificationManager.clearConnectionLost()
+            }
+            LossAlert.KEEP -> Unit
+        }
+    }
+
     private fun updateConnectWakeLock(connecting: Boolean) {
         val wl = connectingWakeLock ?: return
         if (connecting) {
@@ -451,6 +498,7 @@ class ObscuraVpnService : VpnService() {
 
     override fun onDestroy() {
         destroyed = true
+        if (::handler.isInitialized) handler.removeCallbacks(showReconnectingAlert)
         updateConnectWakeLock(false)
         super.onDestroy()
         if (instance.getAndSet(null) == null) {

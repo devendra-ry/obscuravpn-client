@@ -4,6 +4,12 @@
     <string name="notification_action_location">Location</string>
     <string name="notification_action_quick_connect">Quick Connect</string>
     <string name="notification_channel_vpn_name" translatable="false">Obscura VPN</string>
+    <string name="notification_channel_alerts_name">Connection alerts</string>
+    <string name="notification_lost_title">Connection lost</string>
+    <string name="notification_lost_text">Obscura is reconnecting. Apps can’t reach the internet until it’s back.</string>
+    <string name="notification_disconnected_title">Obscura disconnected</string>
+    <string name="notification_disconnected_text">Your traffic is not protected. Tap Reconnect to protect it again.</string>
+    <string name="notification_action_reconnect">Reconnect</string>
     <string name="notification_vpn_text">Status: %1$s</string>
     <string name="notification_vpn_status_connecting">Connecting…</string>
     <string name="notification_vpn_status_connected">Connected</string>

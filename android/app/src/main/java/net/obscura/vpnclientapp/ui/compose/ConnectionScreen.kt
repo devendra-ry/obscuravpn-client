@@ -46,6 +46,7 @@ import net.obscura.vpnclientapp.client.OneRelay
 import net.obscura.vpnclientapp.client.RelaySelector
 import net.obscura.vpnclientapp.client.TrafficStats
 import net.obscura.vpnclientapp.client.TunnelMode
+import net.obscura.vpnclientapp.ui.RecentExit
 
 data class ConnectionUiParams(
     val status: CoreStatus,
@@ -54,6 +55,11 @@ data class ConnectionUiParams(
     val stats: TrafficStats?,
     val internetAvailable: Boolean,
     val startError: String?,
+    val recents: List<RecentExit> = emptyList(),
+    /** What the automatic fallback changed, until dismissed. */
+    val fallbackNotice: String? = null,
+    /** The tunnel was up and dropped; the core is bringing it back. */
+    val connectionLost: Boolean = false,
 )
 
 data class ConnectionActions(
@@ -64,6 +70,8 @@ data class ConnectionActions(
     val onOpenAccount: () -> Unit,
     val onSwitchMode: (TunnelMode) -> Unit,
     val onUseFastestRelay: () -> Unit,
+    val onConnectRecent: (RecentExit) -> Unit = {},
+    val onDismissNotice: () -> Unit = {},
 )
 
 private data class ConnectionVisualState(
@@ -130,7 +138,7 @@ private fun ConnectionScrollBody(
     ) {
         Spacer(Modifier.height(8.dp))
         MascotGraphic(visual)
-        StatusHeadline(status, params.exits, visual.offline, visual.accountExpired)
+        StatusHeadline(status, params.exits, visual.offline, visual.accountExpired, params.connectionLost)
         PrimaryActionSection(
             visual = visual,
             actions = actions,
@@ -143,7 +151,11 @@ private fun ConnectionScrollBody(
             actions,
             onOpenVpnSettings = { context.startActivity(Intent(AndroidSettings.ACTION_VPN_SETTINGS)) },
         )
+        params.fallbackNotice?.let {
+            NoticeBanner(text = it, kind = NoticeKind.INFO, actionLabel = "OK", onAction = actions.onDismissNotice)
+        }
         RouteCard(status, params.exits, params.relays, actions.onChooseEntry, actions.onChooseExit)
+        RecentsGroup(params.recents, vpn, actions.onConnectRecent)
         if (visual.isConnected && vpn.connected != null) {
             TrafficStatsCard(params.stats, rates, vpn.connected.transport, onOpenDetails)
         }
@@ -255,11 +267,13 @@ private fun StatusHeadline(
     exits: List<OneExit>,
     offline: Boolean,
     accountExpired: Boolean,
+    lost: Boolean,
 ) {
     val vpn = status.vpnStatus
     val title =
         when {
             accountExpired -> "Your account has expired"
+            lost -> "Connection lost"
             vpn.connecting != null -> {
                 val city = vpn.connecting.tunnelArgs.exit.city
                 val cityName = city?.let { c ->
@@ -276,13 +290,19 @@ private fun StatusHeadline(
         when {
             vpn.connected != null -> "Enjoy the free and open internet!"
             accountExpired -> "Top-up or subscribe to continue using Obscura."
+            lost -> "Reconnecting. Apps can't reach the internet until Obscura is back."
             vpn.connecting != null -> "Please wait a moment..."
             offline -> "Connect to the internet to enable Obscura"
             status.account == null -> ""
             else -> "Connect to enjoy seamless privacy protection"
         }
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(title, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
+        Text(
+            title,
+            style = MaterialTheme.typography.headlineMedium,
+            textAlign = TextAlign.Center,
+            color = if (lost) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+        )
         if (subtitle.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
             Text(

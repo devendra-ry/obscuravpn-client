@@ -112,8 +112,18 @@ private fun ConnectionGroups(args: SettingsHostArgs) {
             scope.launch { args.repo.setLocalNetworkAccess(on) }
         }
     }
-    GroupLabel("Protocol")
-    RowGroup { ProtocolRows(args) }
+    LearnMoreLabel("Protocol", LearnMore.PROTOCOL)
+    RowGroup {
+        ProtocolRows(args)
+        GroupDivider()
+        SwitchRow(
+            "Switch automatically",
+            "Try the fastest relay or another protocol when one cannot connect",
+            args.preferences.autoSwitchProtocol,
+        ) {
+            args.onUpdatePreferences(args.preferences.copy(autoSwitchProtocol = it))
+        }
+    }
 }
 
 @Composable
@@ -193,7 +203,7 @@ private fun DnsGroup(args: SettingsHostArgs) {
     val scope = rememberCoroutineScope()
     val useSystemDns = args.status.useSystemDns
     var confirmSystemDns by remember { mutableStateOf(false) }
-    GroupLabel("DNS")
+    LearnMoreLabel("DNS", LearnMore.DNS)
     RowGroup {
         ChoiceRow("Obscura DNS", "Lookups go through the tunnel", !useSystemDns) {
             scope.launch { args.repo.setUseSystemDns(false) }
@@ -275,7 +285,7 @@ private fun SplitTunnelGroup(args: SettingsHostArgs, onOpenApps: () -> Unit) {
     val runtimeState by VpnServiceStateRegistry.state.collectAsState()
     val settings = args.androidSettings
     val update: (AndroidVpnSettings) -> Unit = { args.repo.updateAndroidSettings(it) }
-    GroupLabel("Split tunnelling")
+    LearnMoreLabel("Split tunnelling", LearnMore.SPLIT)
     if (
         runtimeState.isLockdownEnabled && (settings.splitMode != SplitMode.Off || settings.excludedCidrs.isNotEmpty())
     ) {
@@ -359,7 +369,7 @@ private fun SecurityGroup(args: SettingsHostArgs) {
     val age = args.status.wgKeyMaxAgeSecs
     val setAge: (Long) -> Unit = { secs -> scope.launch { args.repo.setWgKeyMaxAge(secs) } }
     var rotated by remember { mutableStateOf(false) }
-    GroupLabel("WireGuard® key")
+    LearnMoreLabel("WireGuard® key", LearnMore.KEY)
     RowGroup {
         ChoiceRow("New key every 30 days", "The default", age >= SECONDS_30_DAYS) { setAge(SECONDS_30_DAYS) }
         GroupDivider()
@@ -471,7 +481,7 @@ private fun AppearanceGroup(current: OsStatus.ColorScheme, onSelect: (OsStatus.C
 private val EXPERIMENTAL_FLAGS =
     mapOf(
         "killSwitch" to ("Kill switch" to "Block all traffic while the tunnel is down"),
-        "tcpTlsTunnel" to ("TCP/TLS tunnel" to "Allow the TCP/TLS protocol"),
+        "tcpTlsTunnel" to ("Stealth over TCP/TLS" to "Carry Stealth over TCP/TLS instead of QUIC"),
     )
 
 private fun flagValue(status: CoreStatus, key: String): Boolean =

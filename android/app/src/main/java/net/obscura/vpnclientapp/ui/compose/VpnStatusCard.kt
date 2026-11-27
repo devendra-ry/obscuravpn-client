@@ -51,19 +51,21 @@ fun VpnStatusCard(
     val color =
         when {
             connected != null -> extra.success
+            vpn.connecting?.reconnecting == true -> MaterialTheme.colorScheme.error
             connecting -> ObscuraPalette.Orange
             else -> MaterialTheme.colorScheme.error
         }
     val title =
         when {
             connected != null -> "Connected to ${connected.exit.cityName}"
-            connecting -> if (vpn.connecting?.reconnecting == true) "Reconnecting…" else "Connecting…"
+            connecting -> if (vpn.connecting?.reconnecting == true) "Connection lost" else "Connecting…"
             !internetAvailable -> "Offline"
             else -> "Disconnected"
         }
     val subtitle =
         when {
             connected != null -> "Your traffic is protected"
+            vpn.connecting?.reconnecting == true -> "Reconnecting; traffic is held until it's back"
             !internetAvailable -> "Connect to the internet"
             else -> "Obscura is not connected"
         }

@@ -24,7 +24,9 @@ private val log = Logger(NotificationManager::class)
 internal class NotificationManager(private val context: Context) {
     companion object {
         private const val NOTIFICATION_CHANNEL_ID = "vpn_channel"
+        private const val ALERT_CHANNEL_ID = "vpn_alerts"
         const val NOTIFICATION_ID = 1
+        private const val ALERT_ID = 2
         private const val PENDING_INTENT_FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
     }
 
@@ -46,6 +48,15 @@ internal class NotificationManager(private val context: Context) {
                         enableVibration(false)
                         setSound(null, null)
                     },
+            )
+        this.context
+            .getSystemService(PlatformNotificationManager::class.java)
+            ?.createNotificationChannel(
+                NotificationChannel(
+                    ALERT_CHANNEL_ID,
+                    this.context.getString(R.string.notification_channel_alerts_name),
+                    PlatformNotificationManager.IMPORTANCE_HIGH,
+                ),
             )
     }
 
@@ -143,6 +154,49 @@ internal class NotificationManager(private val context: Context) {
             .setOnlyAlertOnce(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
+
+    /** Warns that the tunnel is down: [stopped] when it stopped for good, otherwise while the core reconnects. */
+    fun showConnectionLost(stopped: Boolean, prepareResult: PrepareResult) = runCatching {
+        if (!this.canPost()) return@runCatching
+        val builder =
+            NotificationCompat.Builder(this.context, ALERT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_name)
+                .setContentTitle(
+                    this.context.getString(
+                        if (stopped) R.string.notification_disconnected_title else R.string.notification_lost_title,
+                    ),
+                )
+                .setContentText(
+                    this.context.getString(
+                        if (stopped) R.string.notification_disconnected_text else R.string.notification_lost_text,
+                    ),
+                )
+                .setContentIntent(this.buildIntentMainActivity(null))
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_ERROR)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+                .setLocalOnly(true)
+        if (stopped) {
+            builder.addAction(
+                this.buildAction(
+                    R.string.notification_action_reconnect,
+                    when (prepareResult) {
+                        PrepareResult.Ready -> this.buildIntentVpnService(ACTION_START_TUNNEL)
+                        else -> this.buildIntentMainActivity(PATH_REQUEST_VPN_START)
+                    },
+                ),
+            )
+        }
+        this.manager.notify(ALERT_ID, builder.build())
+    }
+        .onFailure { log.error("failed to post the connection alert: ${it.message}") }
+
+    fun clearConnectionLost() = runCatching { this.manager.cancel(ALERT_ID) }
+
+    private fun canPost() =
+        ContextCompat.checkSelfPermission(this.context, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
 
     fun notify(vpnStatus: ManagerCmdOk.GetStatus.VpnStatus?, prepareResult: PrepareResult) = runCatching {
         // Defensive permission check in case user revokes permissions.

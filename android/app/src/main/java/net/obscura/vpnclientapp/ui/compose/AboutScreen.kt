@@ -42,6 +42,7 @@ import net.obscura.vpnclientapp.ui.CoreRepository
 import net.obscura.vpnclientapp.ui.launchShareDebugBundle
 
 private data class DebugBundleUiState(
+    val kind: ProblemKind?,
     val feedback: String,
     val inProgress: Boolean,
     val latestPath: String?,
@@ -58,6 +59,7 @@ fun AboutScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var feedback by remember { mutableStateOf("") }
+    var kind by remember { mutableStateOf<ProblemKind?>(null) }
     var bundleError by remember { mutableStateOf<String?>(null) }
     var showLicenses by remember { mutableStateOf(false) }
 
@@ -71,12 +73,13 @@ fun AboutScreen(
     ) {
         AppBrandHeader()
         DebugBundleCard(
-            state = DebugBundleUiState(feedback, debugInProgress, latestDebugPath, bundleError),
+            state = DebugBundleUiState(kind, feedback, debugInProgress, latestDebugPath, bundleError),
+            onKindChange = { kind = it },
             onFeedbackChange = { feedback = it },
             onCreateBundle = { asEmail ->
                 scope.launch {
                     bundleError = null
-                    runCatching { repo.createDebugBundle(feedback.ifBlank { null }) }
+                    runCatching { repo.createDebugBundle(reportText(kind, feedback)) }
                         .onSuccess { path -> launchShareDebugBundle(context, path, asEmail = asEmail) }
                         .onFailure { bundleError = it.message ?: "Failed to create debug bundle" }
                 }
@@ -125,19 +128,21 @@ private fun AppBrandHeader() {
 @Composable
 private fun DebugBundleCard(
     state: DebugBundleUiState,
+    onKindChange: (ProblemKind?) -> Unit,
     onFeedbackChange: (String) -> Unit,
     onCreateBundle: (asEmail: Boolean) -> Unit,
 ) {
     GroupLabel("Support")
     RowGroup {
         GroupBlock {
-            Text("Debug bundle", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            SupportingText("Encrypted logs and system state, for Obscura support only")
+            Text("Report a problem", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            SupportingText("Sends encrypted logs and system state, for Obscura support only")
+            ProblemPicker(state.kind, onKindChange)
             Spacer(Modifier.height(10.dp))
             OutlinedTextField(
                 value = state.feedback,
                 onValueChange = onFeedbackChange,
-                placeholder = { Text("What went wrong? (optional)") },
+                placeholder = { Text(state.kind?.question ?: "What went wrong? (optional)") },
                 minLines = 2,
                 maxLines = 4,
                 shape = MaterialTheme.shapes.medium,
@@ -146,7 +151,7 @@ private fun DebugBundleCard(
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                 ObscuraGradientButton(
-                    text = if (state.inProgress) "Creating…" else "Share bundle",
+                    text = if (state.inProgress) "Creating…" else "Share report",
                     onClick = { onCreateBundle(false) },
                     enabled = !state.inProgress,
                     modifier = Modifier.weight(1f),

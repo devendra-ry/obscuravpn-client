@@ -43,7 +43,12 @@ sealed interface ManagerCmdOk {
 
             @KeepGeneratedSerializer
             @Serializable(with = Connecting.Serializer::class)
-            class Connecting : VpnStatus {
+            class Connecting(
+                /** True when an established tunnel dropped and the core is bringing it back, not a new connect. */
+                val reconnecting: Boolean = false,
+                /** Why the last attempt failed, while the core keeps retrying (e.g. `noInternet`). */
+                val connectError: String? = null,
+            ) : VpnStatus {
                 internal object Serializer :
                     ExternallyTaggedEnumVariantSerializer<Connecting>("connecting", generatedSerializer())
             }

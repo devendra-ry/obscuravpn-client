@@ -13,7 +13,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,7 +20,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,12 +51,14 @@ import net.obscura.vpnclientapp.client.TrafficStats
 import net.obscura.vpnclientapp.client.TunnelArgs
 import net.obscura.vpnclientapp.client.TunnelMode
 
+/** One hop of the route: its country (null for "fastest"), the place, and what else is known about it. */
 data class HopDisplay(
-    val flag: String,
+    val countryCode: String?,
     val title: String,
     val subtitle: String?,
 )
 
+/** The route as two rows of the location picker's kind: where traffic enters Obscura and where it leaves. */
 @Composable
 fun RouteCard(
     status: CoreStatus,
@@ -69,122 +69,65 @@ fun RouteCard(
 ) {
     val connected = status.vpnStatus.connected
     val shown = status.vpnStatus.connecting?.tunnelArgs ?: status.tunnelArgs
-    val entry = resolveEntryHop(connected, shown, relays)
-    val exit = resolveExitHop(connected, shown, exits)
-    val lineColor = if (connected != null) LocalExtraColors.current.success else LocalExtraColors.current.border
-
-    ObscuraCard(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
-        EndNodeRow(icon = AppIcons.Phone, label = "This device", topLine = null, bottomLine = lineColor)
-        HopNodeRow("Entry relay · sees your IP", entry, lineColor, onChooseEntry)
-        HopNodeRow("Exit · sees your traffic", exit, lineColor, onChooseExit)
-        EndNodeRow(icon = AppIcons.Globe, label = "Internet", topLine = lineColor, bottomLine = null)
-    }
-}
-
-@Composable
-private fun EndNodeRow(
-    icon: ImageVector,
-    label: String,
-    topLine: Color?,
-    bottomLine: Color?,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().height(36.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RailSegment(topLine, bottomLine, width = 36.dp) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = LocalExtraColors.current.muted,
-                modifier = Modifier.size(18.dp),
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        GroupLabel("Route")
+        RowGroup {
+            HopRow(
+                "Entry relay · sees your IP",
+                resolveEntryHop(connected, shown, relays),
+                connected != null,
+                onChooseEntry,
             )
+            GroupDivider(indent = 64.dp)
+            HopRow("Exit · sees your traffic", resolveExitHop(connected, shown, exits), connected != null, onChooseExit)
         }
-        Spacer(Modifier.width(10.dp))
-        Text(label, style = MaterialTheme.typography.bodyMedium, color = LocalExtraColors.current.muted)
     }
 }
 
 @Composable
-private fun HopNodeRow(
-    caption: String,
-    hop: HopDisplay,
-    lineColor: Color,
-    onClick: () -> Unit,
-) {
-    Row(
-        modifier =
-            Modifier.fillMaxWidth()
-                .clip(MaterialTheme.shapes.small)
-                .clickable(onClick = onClick)
-                .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RailSegment(lineColor, lineColor, width = 36.dp) {
-            if (hop.flag.isNotEmpty()) {
-                Text(hop.flag, fontSize = 18.sp)
-            } else {
-                Icon(
-                    AppIcons.Speedometer,
-                    contentDescription = null,
-                    tint = ObscuraPalette.Orange,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(caption, style = MaterialTheme.typography.labelSmall, color = LocalExtraColors.current.muted)
+private fun HopRow(role: String, hop: HopDisplay, connected: Boolean, onClick: () -> Unit) {
+    val muted = LocalExtraColors.current.muted
+    GroupRow(
+        title = hop.title,
+        supporting = {
             Text(
-                hop.title,
-                style = MaterialTheme.typography.titleMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                role,
+                style = MaterialTheme.typography.labelMedium,
+                color = if (connected) LocalExtraColors.current.success else ObscuraPalette.Orange,
             )
             if (!hop.subtitle.isNullOrBlank()) {
                 Text(
                     hop.subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = LocalExtraColors.current.muted,
+                    color = muted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-        }
+        },
+        onClick = onClick,
+        look =
+            RowLook(
+                leading = {
+                    if (hop.countryCode != null) {
+                        FlagBadge(hop.countryCode)
+                    } else {
+                        Icon(
+                            AppIcons.Speedometer,
+                            contentDescription = null,
+                            tint = ObscuraPalette.Orange,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    }
+                },
+            ),
+    ) {
         Icon(
             AppIcons.ChevronRight,
             contentDescription = null,
-            tint = LocalExtraColors.current.muted,
-            modifier = Modifier.size(18.dp),
+            tint = muted,
+            modifier = Modifier.padding(end = 8.dp).size(18.dp),
         )
-    }
-}
-
-@Composable
-private fun RailSegment(
-    topColor: Color?,
-    bottomColor: Color?,
-    width: androidx.compose.ui.unit.Dp,
-    node: @Composable () -> Unit,
-) {
-    Box(modifier = Modifier.width(width).height(44.dp), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier.matchParentSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Box(
-                modifier = Modifier.width(2.dp).weight(1f).background(topColor ?: Color.Transparent),
-            )
-            Box(
-                modifier = Modifier.width(2.dp).weight(1f).background(bottomColor ?: Color.Transparent),
-            )
-        }
-        Box(
-            modifier = Modifier.size(28.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface),
-            contentAlignment = Alignment.Center,
-        ) {
-            node()
-        }
     }
 }
 
@@ -196,9 +139,11 @@ private fun resolveEntryHop(
     val activeRelay = connected?.relay
     if (activeRelay != null) {
         return HopDisplay(
-            flag = AccountIdUtils.countryFlagEmoji(activeRelay.countryCode),
+            countryCode = activeRelay.countryCode,
             title = activeRelay.cityName,
-            subtitle = placeSubtitle(activeRelay.countryCode, activeRelay.cityName),
+            subtitle =
+                listOfNotNull(placeSubtitle(activeRelay.countryCode, activeRelay.cityName), activeRelay.id)
+                    .joinToString(" · "),
         )
     }
     val r = args.relay
@@ -207,30 +152,30 @@ private fun resolveEntryHop(
             val found = relays.find { it.id == r.relay.id }
             if (found != null) {
                 HopDisplay(
-                    flag = AccountIdUtils.countryFlagEmoji(found.countryCode),
+                    countryCode = found.countryCode,
                     title = "${found.cityName} (${found.id})",
                     subtitle = placeSubtitle(found.countryCode, found.cityName),
                 )
             } else {
-                HopDisplay("", r.relay.id, null)
+                HopDisplay(null, r.relay.id, null)
             }
         }
         r.city != null -> {
             val found = relays.find { it.countryCode == r.city.countryCode && it.cityCode == r.city.cityCode }
             val city = found?.cityName ?: r.city.cityCode.uppercase(Locale.ROOT)
             HopDisplay(
-                flag = AccountIdUtils.countryFlagEmoji(r.city.countryCode),
+                countryCode = r.city.countryCode,
                 title = city,
                 subtitle = placeSubtitle(r.city.countryCode, city),
             )
         }
         r.country != null ->
             HopDisplay(
-                flag = AccountIdUtils.countryFlagEmoji(r.country.countryCode),
+                countryCode = r.country.countryCode,
                 title = AccountIdUtils.countryDisplayName(r.country.countryCode),
                 subtitle = "Any city",
             )
-        else -> HopDisplay("", "Fastest entry relay", "Picked when you connect")
+        else -> HopDisplay(null, "Fastest entry relay", "Picked when you connect")
     }
 }
 
@@ -242,10 +187,10 @@ private fun resolveExitHop(
     if (connected != null) {
         val e = connected.exit
         val sub =
-            listOfNotNull(placeSubtitle(e.countryCode, e.cityName), e.providerName.ifBlank { null })
+            listOfNotNull(placeSubtitle(e.countryCode, e.cityName), e.providerName.ifBlank { null }, e.id)
                 .joinToString(" · ")
                 .ifBlank { null }
-        return HopDisplay(AccountIdUtils.countryFlagEmoji(e.countryCode), e.cityName, sub)
+        return HopDisplay(e.countryCode, e.cityName, sub)
     }
     val e = args.exit
     return when {
@@ -253,30 +198,30 @@ private fun resolveExitHop(
             val found = exits.find { it.id == e.exit.id }
             if (found != null) {
                 HopDisplay(
-                    AccountIdUtils.countryFlagEmoji(found.countryCode),
+                    found.countryCode,
                     found.cityName,
                     listOfNotNull(placeSubtitle(found.countryCode, found.cityName), found.id).joinToString(" · "),
                 )
             } else {
-                HopDisplay("", e.exit.id, null)
+                HopDisplay(null, e.exit.id, null)
             }
         }
         e.city != null -> {
             val found = exits.find { it.countryCode == e.city.countryCode && it.cityCode == e.city.cityCode }
             val city = found?.cityName ?: e.city.cityCode.uppercase(Locale.ROOT)
             HopDisplay(
-                AccountIdUtils.countryFlagEmoji(e.city.countryCode),
+                e.city.countryCode,
                 city,
                 placeSubtitle(e.city.countryCode, city),
             )
         }
         e.country != null ->
             HopDisplay(
-                AccountIdUtils.countryFlagEmoji(e.country.countryCode),
+                e.country.countryCode,
                 AccountIdUtils.countryDisplayName(e.country.countryCode),
                 "Any city",
             )
-        else -> HopDisplay("", "Fastest exit", "Picked when you connect")
+        else -> HopDisplay(null, "Fastest exit", "Picked when you connect")
     }
 }
 
@@ -309,6 +254,20 @@ fun TrafficStatsCard(
             SmallStat("Latency", stats?.let { "${it.latestLatencyMs.toInt()} ms" } ?: "–", Modifier.weight(1f))
             SmallStat("Protocol", modeLabel(mode), Modifier.weight(1f))
             SmallStat("Session", stats?.let { formatSession(it.connectedMs) } ?: "–", Modifier.weight(1f))
+        }
+        // The whole card opens the sheet; this says so.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Connection details", style = MaterialTheme.typography.labelLarge, color = ObscuraPalette.Orange)
+            Icon(
+                AppIcons.ChevronRight,
+                contentDescription = null,
+                tint = ObscuraPalette.Orange,
+                modifier = Modifier.size(16.dp),
+            )
         }
     }
 }
@@ -352,22 +311,7 @@ fun ConnectionDetailsSheet(connected: CoreVpnStatus.ConnectedInfo, onDismiss: ()
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("Connection details", style = MaterialTheme.typography.titleLarge)
-            connected.relay?.let { relay ->
-                KeyValueRow("Entry relay", "${relay.cityName} (${relay.id})")
-                val ports = if (relay.ports.isNotEmpty()) "ports ${relay.ports.joinToString(", ")}" else ""
-                KeyValueRow(
-                    "Entry relay address",
-                    listOf(relay.ipV4, ports).filter { it.isNotBlank() }.joinToString(", "),
-                    mono = true,
-                )
-            }
-            KeyValueRow("Exit", "${connected.exit.cityName} (${connected.exit.id})")
-            if (connected.exit.providerName.isNotBlank()) {
-                KeyValueRow("Provider", connected.exit.providerName)
-            }
-            KeyValueRow("Protocol", transportName(connected.transport))
-            KeyValueRow("Exit public key", connected.exitPublicKey, mono = true)
-            KeyValueRow("Your public key", connected.clientPublicKey, mono = true)
+            serverInfoRows(connected).forEach { InfoLine(it) }
             Spacer(Modifier.height(12.dp))
         }
     }
@@ -507,7 +451,7 @@ fun modeLabel(mode: TunnelMode): String =
         TunnelMode.TCP_TLS -> "TCP/TLS"
     }
 
-private fun transportName(mode: TunnelMode): String =
+fun transportName(mode: TunnelMode): String =
     when (mode) {
         TunnelMode.QUIC -> "WireGuard® in QUIC"
         TunnelMode.WIREGUARD_UDP -> "WireGuard® over UDP"
@@ -525,7 +469,7 @@ private fun formatRate(bps: Double?): Pair<String, String> {
     }
 }
 
-private fun formatSession(ms: Long): String {
+fun formatSession(ms: Long): String {
     val totalSec = ms / 1000L
     val h = totalSec / 3600L
     val m = (totalSec % 3600L) / 60L

@@ -198,6 +198,7 @@ private fun MainTabContent(
                         relays = state.relaysState,
                         internetAvailable = state.osSnapshot.internetAvailable,
                         mode = state.locationMode,
+                        stats = state.stats,
                     ),
                 contentPadding = padding,
                 onModeChange = { mode -> callbacks.onModeAndTab(mode, MainTab.LOCATION) },

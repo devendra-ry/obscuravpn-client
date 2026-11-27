@@ -132,6 +132,15 @@ object AppIcons {
         )
     }
 
+    val Info: ImageVector by lazy {
+        strokeIcon(
+            "Info",
+            "M12 3 A9 9 0 1 0 12 21 A9 9 0 1 0 12 3 Z",
+            "M12 11 L12 16",
+            "M12 8 L12 8.01",
+        )
+    }
+
     val ExternalLink: ImageVector by lazy {
         strokeIcon(
             "ExternalLink",
@@ -149,6 +158,14 @@ object AppIcons {
             "M5 13 A10 10 0 0 1 11 10.2",
             "M15.5 10.7 A10 10 0 0 1 19 13",
             "M12 20 H12.01",
+        )
+    }
+
+    val ShieldCheck: ImageVector by lazy {
+        strokeIcon(
+            "ShieldCheck",
+            "M12 3 L4 7 V12 C4 16.5 7.4 20.6 12 22 C16.6 20.6 20 16.5 20 12 V7 Z",
+            "M8.5 12.5 L11 15 L15.5 10",
         )
     }
 

@@ -2,7 +2,6 @@ package net.obscura.vpnclientapp.ui.compose
 
 import android.content.Intent
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -13,10 +12,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -70,7 +67,7 @@ fun AboutScreen(
                 .padding(contentPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         AppBrandHeader()
         DebugBundleCard(
@@ -104,24 +101,24 @@ fun AboutScreen(
 
 @Composable
 private fun AppBrandHeader() {
-    ObscuraCard {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            AppIcon(52.dp)
-            Column {
-                Image(
-                    painter = painterResource(R.drawable.obscura_wordmark),
-                    contentDescription = "Obscura VPN",
-                    colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
-                    modifier = Modifier.height(22.dp),
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "Version ${BuildConfig.VERSION_NAME} (${BuildConfig.FLAVOR})",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = LocalExtraColors.current.muted,
-                )
-            }
-        }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        AppIcon(72.dp)
+        Spacer(Modifier.height(14.dp))
+        Image(
+            painter = painterResource(R.drawable.obscura_wordmark),
+            contentDescription = "Obscura VPN",
+            colorFilter = ColorFilter.tint(MaterialTheme.colorScheme.onSurface),
+            modifier = Modifier.height(24.dp),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Version ${BuildConfig.VERSION_NAME} · ${BuildConfig.FLAVOR}",
+            style = MaterialTheme.typography.bodySmall,
+            color = LocalExtraColors.current.muted,
+        )
     }
 }
 
@@ -131,101 +128,73 @@ private fun DebugBundleCard(
     onFeedbackChange: (String) -> Unit,
     onCreateBundle: (asEmail: Boolean) -> Unit,
 ) {
-    ObscuraCard {
-        Text("Support & Diagnostics", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Create an encrypted diagnostic bundle containing logs and system state to share with support.",
-            style = MaterialTheme.typography.bodySmall,
-            color = LocalExtraColors.current.muted,
-        )
-        Spacer(Modifier.height(10.dp))
-        OutlinedTextField(
-            value = state.feedback,
-            onValueChange = onFeedbackChange,
-            label = { Text("Describe your issue (optional)") },
-            minLines = 2,
-            maxLines = 4,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = { onCreateBundle(false) },
-                enabled = !state.inProgress,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(if (state.inProgress) "Creating…" else "Share Bundle")
-            }
-            OutlinedButton(
-                onClick = { onCreateBundle(true) },
-                enabled = !state.inProgress,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text("Email Support")
-            }
-        }
-        if (state.latestPath != null) {
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Latest bundle ready to share.",
-                style = MaterialTheme.typography.labelSmall,
-                color = LocalExtraColors.current.success,
+    GroupLabel("Support")
+    RowGroup {
+        GroupBlock {
+            Text("Debug bundle", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            SupportingText("Encrypted logs and system state, for Obscura support only")
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                value = state.feedback,
+                onValueChange = onFeedbackChange,
+                placeholder = { Text("What went wrong? (optional)") },
+                minLines = 2,
+                maxLines = 4,
+                shape = MaterialTheme.shapes.medium,
+                modifier = Modifier.fillMaxWidth(),
             )
-        }
-        state.errorMsg?.let {
-            Spacer(Modifier.height(6.dp))
-            NoticeBanner(text = it, kind = NoticeKind.ERROR)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                ObscuraGradientButton(
+                    text = if (state.inProgress) "Creating…" else "Share bundle",
+                    onClick = { onCreateBundle(false) },
+                    enabled = !state.inProgress,
+                    modifier = Modifier.weight(1f),
+                )
+                OutlinedButton(
+                    onClick = { onCreateBundle(true) },
+                    enabled = !state.inProgress,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Email support")
+                }
+            }
+            if (state.latestPath != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Latest bundle ready to share.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = LocalExtraColors.current.success,
+                )
+            }
         }
     }
+    state.errorMsg?.let { NoticeBanner(text = it, kind = NoticeKind.ERROR) }
 }
 
 @Composable
 private fun LinksAndLicensesCard(onOpenLicenses: () -> Unit, onOpenUrl: (String) -> Unit) {
-    ObscuraCard(contentPadding = PaddingValues(0.dp)) {
-        AboutRow(
-            "Open-source licenses",
-            { Icon(AppIcons.ChevronRight, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            onOpenLicenses,
-        )
-        SectionDivider()
-        AboutRow(
-            "Privacy Policy",
-            { Icon(AppIcons.ExternalLink, contentDescription = null, modifier = Modifier.size(16.dp)) },
-        ) {
-            onOpenUrl("https://obscura.com/privacy")
-        }
-        SectionDivider()
-        AboutRow(
-            "Terms of Service",
-            { Icon(AppIcons.ExternalLink, contentDescription = null, modifier = Modifier.size(16.dp)) },
-        ) {
-            onOpenUrl("https://obscura.com/terms")
-        }
-        SectionDivider()
-        AboutRow(
-            "Obscura Website",
-            { Icon(AppIcons.ExternalLink, contentDescription = null, modifier = Modifier.size(16.dp)) },
-        ) {
-            onOpenUrl("https://obscura.com")
-        }
+    GroupLabel("About")
+    RowGroup {
+        NavRow("Open-source licences", null, onClick = onOpenLicenses)
+        GroupDivider()
+        LinkRow("Privacy policy") { onOpenUrl("https://obscura.com/privacy") }
+        GroupDivider()
+        LinkRow("Terms of service") { onOpenUrl("https://obscura.com/terms") }
+        GroupDivider()
+        LinkRow("obscura.com") { onOpenUrl("https://obscura.com") }
     }
 }
 
 @Composable
-private fun AboutRow(title: String, trailing: @Composable () -> Unit, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.weight(1f),
+private fun LinkRow(title: String, onClick: () -> Unit) {
+    GroupRow(title = title, onClick = onClick) {
+        Icon(
+            AppIcons.ExternalLink,
+            contentDescription = null,
+            tint = LocalExtraColors.current.muted,
+            modifier = Modifier.padding(end = 10.dp).size(16.dp),
         )
-        Spacer(Modifier.width(8.dp))
-        trailing()
     }
 }
 

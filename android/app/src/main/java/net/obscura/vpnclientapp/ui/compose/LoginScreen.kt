@@ -14,11 +14,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -146,7 +148,7 @@ private fun LoginFormScrollContent(
             modifier = Modifier.fillMaxWidth(),
             onClick = cb.onCreateAccount,
         )
-        Spacer(Modifier.height(20.dp))
+        OrDivider()
         ExistingAccountLoginBlock(accountInput, busy, cb.onInputChange, cb.onLogin, cb.onInvalid)
         errorMsg?.let {
             Spacer(Modifier.height(12.dp))
@@ -160,11 +162,17 @@ private fun LoginFormScrollContent(
 @Composable
 private fun LoginBrandBlock() {
     val context = LocalContext.current
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        AppIcon(48.dp)
-        Text("Obscura VPN", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-    }
+    AppIcon(80.dp)
     Spacer(Modifier.height(16.dp))
+    Text("Obscura VPN", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "No email, no password: just an account number.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = LocalExtraColors.current.muted,
+        textAlign = TextAlign.Center,
+    )
+    Spacer(Modifier.height(8.dp))
     TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, "https://obscura.com/legal".toUri())) }) {
         Text(
             "By creating an account, you agree to our Terms of Service and Privacy Policy.",
@@ -172,6 +180,21 @@ private fun LoginBrandBlock() {
             textAlign = TextAlign.Center,
             color = LocalExtraColors.current.muted,
         )
+    }
+}
+
+@Composable
+private fun OrDivider() {
+    val border = LocalExtraColors.current.border
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+        HorizontalDivider(modifier = Modifier.weight(1f), color = border)
+        Text(
+            "or log in",
+            style = MaterialTheme.typography.labelMedium,
+            color = LocalExtraColors.current.muted,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
+        HorizontalDivider(modifier = Modifier.weight(1f), color = border)
     }
 }
 
@@ -186,9 +209,10 @@ private fun ExistingAccountLoginBlock(
     OutlinedTextField(
         value = AccountIdUtils.formatGrouped(accountInput),
         onValueChange = onInputChange,
-        label = { Text("Account Number") },
-        placeholder = { Text("0000 - 0000 - 0000 - 0000 - 0000") },
+        placeholder = { Text("Your 20-digit account number") },
+        textStyle = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontMono),
         singleLine = true,
+        shape = RoundedCornerShape(50),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
         modifier = Modifier.fillMaxWidth(),
     )
@@ -205,7 +229,7 @@ private fun ExistingAccountLoginBlock(
             }
         },
     ) {
-        if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Log In")
+        if (busy) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp) else Text("Log in")
     }
 }
 

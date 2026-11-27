@@ -19,13 +19,22 @@ data class LogParams(
     val tr: Throwable?,
 )
 
+private val ACCOUNT_NUMBER = Regex("(?<!\\d)\\d{20}(?!\\d)")
+
+/**
+ * An account number is 20 digits and is the whole login: it must not reach logcat or a debug bundle. Status updates
+ * carry it (`accountId`), so every message is masked here instead of at each call site.
+ */
+fun maskAccountNumbers(text: String): String = text.replace(ACCOUNT_NUMBER, "<account>")
+
 class Logger(val tag: String, val cb: ((LogParams) -> Unit)? = null) {
     constructor(
         classRef: KClass<*>,
         cb: ((LogParams) -> Unit)? = null,
     ) : this(classRef.simpleName ?: "AnonymousClass", cb)
 
-    fun event(level: LogLevel, message: String, messageId: String? = null, tr: Throwable? = null) {
+    fun event(level: LogLevel, rawMessage: String, messageId: String? = null, tr: Throwable? = null) {
+        val message = maskAccountNumbers(rawMessage)
         when (level) {
             LogLevel.TRACE -> Log.v(this.tag, message, tr)
             LogLevel.DEBUG -> Log.d(this.tag, message, tr)

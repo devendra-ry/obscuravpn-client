@@ -46,7 +46,6 @@ import net.obscura.vpnclientapp.client.OneRelay
 import net.obscura.vpnclientapp.client.RelaySelector
 import net.obscura.vpnclientapp.client.TrafficStats
 import net.obscura.vpnclientapp.client.TunnelMode
-import net.obscura.vpnclientapp.ui.RecentExit
 
 data class ConnectionUiParams(
     val status: CoreStatus,
@@ -55,7 +54,6 @@ data class ConnectionUiParams(
     val stats: TrafficStats?,
     val internetAvailable: Boolean,
     val startError: String?,
-    val recents: List<RecentExit> = emptyList(),
     /** What the automatic fallback changed, until dismissed. */
     val fallbackNotice: String? = null,
     /** The tunnel was up and dropped; the core is bringing it back. */
@@ -70,7 +68,6 @@ data class ConnectionActions(
     val onOpenAccount: () -> Unit,
     val onSwitchMode: (TunnelMode) -> Unit,
     val onUseFastestRelay: () -> Unit,
-    val onConnectRecent: (RecentExit) -> Unit = {},
     val onDismissNotice: () -> Unit = {},
 )
 
@@ -155,7 +152,6 @@ private fun ConnectionScrollBody(
             NoticeBanner(text = it, kind = NoticeKind.INFO, actionLabel = "OK", onAction = actions.onDismissNotice)
         }
         RouteCard(status, params.exits, params.relays, actions.onChooseEntry, actions.onChooseExit)
-        RecentsGroup(params.recents, vpn, actions.onConnectRecent)
         if (visual.isConnected && vpn.connected != null) {
             TrafficStatsCard(params.stats, rates, vpn.connected.transport, onOpenDetails)
         }

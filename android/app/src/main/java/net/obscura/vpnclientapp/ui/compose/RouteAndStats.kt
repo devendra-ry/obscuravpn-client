@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -59,6 +61,7 @@ data class HopDisplay(
 )
 
 /** The route as two rows of the location picker's kind: where traffic enters Obscura and where it leaves. */
+/** The route as a line from this device through the entry relay and the exit to the internet. */
 @Composable
 fun RouteCard(
     status: CoreStatus,
@@ -69,65 +72,122 @@ fun RouteCard(
 ) {
     val connected = status.vpnStatus.connected
     val shown = status.vpnStatus.connecting?.tunnelArgs ?: status.tunnelArgs
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        GroupLabel("Route")
-        RowGroup {
-            HopRow(
-                "Entry relay · sees your IP",
-                resolveEntryHop(connected, shown, relays),
-                connected != null,
-                onChooseEntry,
-            )
-            GroupDivider(indent = 64.dp)
-            HopRow("Exit · sees your traffic", resolveExitHop(connected, shown, exits), connected != null, onChooseExit)
-        }
+    val entry = resolveEntryHop(connected, shown, relays)
+    val exit = resolveExitHop(connected, shown, exits)
+    val lineColor = if (connected != null) LocalExtraColors.current.success else LocalExtraColors.current.border
+
+    ObscuraCard(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp)) {
+        EndNodeRow(icon = AppIcons.Phone, label = "This device", topLine = null, bottomLine = lineColor)
+        HopNodeRow("Entry relay · sees your IP", entry, lineColor, onChooseEntry)
+        HopNodeRow("Exit · sees your traffic", exit, lineColor, onChooseExit)
+        EndNodeRow(icon = AppIcons.Globe, label = "Internet", topLine = lineColor, bottomLine = null)
     }
 }
 
 @Composable
-private fun HopRow(role: String, hop: HopDisplay, connected: Boolean, onClick: () -> Unit) {
-    val muted = LocalExtraColors.current.muted
-    GroupRow(
-        title = hop.title,
-        supporting = {
+private fun EndNodeRow(
+    icon: ImageVector,
+    label: String,
+    topLine: Color?,
+    bottomLine: Color?,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(36.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RailSegment(topLine, bottomLine, width = 36.dp) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = LocalExtraColors.current.muted,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = LocalExtraColors.current.muted)
+    }
+}
+
+@Composable
+private fun HopNodeRow(
+    caption: String,
+    hop: HopDisplay,
+    lineColor: Color,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier =
+            Modifier.fillMaxWidth()
+                .clip(MaterialTheme.shapes.small)
+                .clickable(onClick = onClick)
+                .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RailSegment(lineColor, lineColor, width = 36.dp) {
+            if (hop.countryCode != null) {
+                Text(AccountIdUtils.countryFlagEmoji(hop.countryCode), fontSize = 18.sp)
+            } else {
+                Icon(
+                    AppIcons.Speedometer,
+                    contentDescription = null,
+                    tint = ObscuraPalette.Orange,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(caption, style = MaterialTheme.typography.labelSmall, color = LocalExtraColors.current.muted)
             Text(
-                role,
-                style = MaterialTheme.typography.labelMedium,
-                color = if (connected) LocalExtraColors.current.success else ObscuraPalette.Orange,
+                hop.title,
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             if (!hop.subtitle.isNullOrBlank()) {
                 Text(
                     hop.subtitle,
                     style = MaterialTheme.typography.bodySmall,
-                    color = muted,
+                    color = LocalExtraColors.current.muted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-        },
-        onClick = onClick,
-        look =
-            RowLook(
-                leading = {
-                    if (hop.countryCode != null) {
-                        FlagBadge(hop.countryCode)
-                    } else {
-                        Icon(
-                            AppIcons.Speedometer,
-                            contentDescription = null,
-                            tint = ObscuraPalette.Orange,
-                            modifier = Modifier.size(22.dp),
-                        )
-                    }
-                },
-            ),
-    ) {
+        }
         Icon(
             AppIcons.ChevronRight,
             contentDescription = null,
-            tint = muted,
-            modifier = Modifier.padding(end = 8.dp).size(18.dp),
+            tint = LocalExtraColors.current.muted,
+            modifier = Modifier.size(18.dp),
         )
+    }
+}
+
+@Composable
+private fun RailSegment(
+    topColor: Color?,
+    bottomColor: Color?,
+    width: androidx.compose.ui.unit.Dp,
+    node: @Composable () -> Unit,
+) {
+    Box(modifier = Modifier.width(width).height(44.dp), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.matchParentSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(
+                modifier = Modifier.width(2.dp).weight(1f).background(topColor ?: Color.Transparent),
+            )
+            Box(
+                modifier = Modifier.width(2.dp).weight(1f).background(bottomColor ?: Color.Transparent),
+            )
+        }
+        Box(
+            modifier = Modifier.size(28.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface),
+            contentAlignment = Alignment.Center,
+        ) {
+            node()
+        }
     }
 }
 

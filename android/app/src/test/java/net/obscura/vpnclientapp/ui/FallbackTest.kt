@@ -36,21 +36,3 @@ class FallbackTest {
         assertNull(nextFallback("accountExpired", TunnelMode.QUIC, anyRelay = true, tried = emptySet()))
     }
 }
-
-class RecentsTest {
-    private fun city(code: String) = RecentExit("de", code, code.uppercase())
-
-    @Test
-    fun aRevisitedCityMovesToTheFrontWithoutDuplicates() {
-        val recents = listOf(city("ber"), city("fra"), city("muc"))
-        assertEquals(listOf("muc", "ber", "fra"), pushRecent(recents, city("muc")).map { it.cityCode })
-    }
-
-    @Test
-    fun theListKeepsOnlyTheNewest() {
-        val recents = (1..MAX_RECENT_EXITS).map { city("c$it") }
-        val next = pushRecent(recents, city("new"))
-        assertEquals(MAX_RECENT_EXITS, next.size)
-        assertEquals("new", next.first().cityCode)
-    }
-}

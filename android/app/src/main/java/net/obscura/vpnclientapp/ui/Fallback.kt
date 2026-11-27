@@ -1,24 +1,6 @@
 package net.obscura.vpnclientapp.ui
 
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
 import net.obscura.vpnclientapp.client.TunnelMode
-
-/** A city connected to recently, newest first in [PreferencesManager.Preferences.recentExits]. */
-@Serializable
-data class RecentExit(
-    @SerialName("country_code") val countryCode: String,
-    @SerialName("city_code") val cityCode: String,
-    @SerialName("city_name") val cityName: String,
-)
-
-const val MAX_RECENT_EXITS = 5
-
-/** [recents] with [exit] moved (or added) to the front, at most [MAX_RECENT_EXITS] long. */
-fun pushRecent(recents: List<RecentExit>, exit: RecentExit): List<RecentExit> =
-    (listOf(exit) + recents.filterNot { it.countryCode == exit.countryCode && it.cityCode == exit.cityCode }).take(
-        MAX_RECENT_EXITS,
-    )
 
 /** What to change after a connection attempt failed. */
 sealed interface Fallback {

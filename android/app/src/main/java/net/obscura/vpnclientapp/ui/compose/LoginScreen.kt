@@ -161,7 +161,7 @@ private fun LoginFormScrollContent(
 private fun LoginBrandBlock() {
     val context = LocalContext.current
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-        Image(painterResource(R.drawable.ic_launcher), contentDescription = null, modifier = Modifier.size(48.dp))
+        AppIcon(48.dp)
         Text("Obscura VPN", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     }
     Spacer(Modifier.height(16.dp))
@@ -302,7 +302,7 @@ private fun AccountGenerationColumn(
 
 @Composable
 private fun GeneratedAccountBox(accountId: String, copied: Boolean, onCopy: () -> Unit) {
-    Image(painterResource(R.drawable.ic_launcher), contentDescription = null, modifier = Modifier.size(56.dp))
+    AppIcon(56.dp)
     Spacer(Modifier.height(16.dp))
     Text("Your Account Number", style = MaterialTheme.typography.titleLarge)
     Spacer(Modifier.height(12.dp))

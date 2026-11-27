@@ -1,6 +1,5 @@
 package net.obscura.vpnclientapp.ui.compose
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -117,7 +116,7 @@ fun ObscuraRoot(
 private fun SplashLoading() {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Image(painterResource(R.drawable.ic_launcher), contentDescription = null, modifier = Modifier.size(64.dp))
+            AppIcon(64.dp)
             CircularProgressIndicator(color = ObscuraPalette.Orange)
         }
     }

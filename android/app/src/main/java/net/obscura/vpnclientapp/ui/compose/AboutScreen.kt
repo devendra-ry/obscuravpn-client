@@ -106,7 +106,7 @@ fun AboutScreen(
 private fun AppBrandHeader() {
     ObscuraCard {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            Image(painterResource(R.drawable.ic_launcher), contentDescription = null, modifier = Modifier.size(52.dp))
+            AppIcon(52.dp)
             Column {
                 Image(
                     painter = painterResource(R.drawable.obscura_wordmark),

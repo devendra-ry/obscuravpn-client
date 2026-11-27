@@ -156,6 +156,21 @@ data class OneRelay(
     @SerialName("city_name") val cityName: String,
     @SerialName("ip_v4") val ipV4: String = "",
     val ports: List<Int> = emptyList(),
+    /** The exits this relay reaches best; the relay picker shows them, the exit picker shows the reverse. */
+    @SerialName("preferred_exits") val preferredExits: List<ExitIdRef> = emptyList(),
+)
+
+/** Rust's `CachedValue<ExitList>`: unlike the relay list, the exits sit in an object under `exits`. */
+@Serializable
+data class CachedExitList(
+    val version: String,
+    @SerialName("last_updated") val lastUpdated: Long = 0,
+    val value: ExitList = ExitList(),
+)
+
+@Serializable
+data class ExitList(
+    val exits: List<OneExit> = emptyList(),
 )
 
 @Serializable
@@ -203,6 +218,7 @@ data class AccountInfo(
 ) {
     @Serializable
     data class TopUpInfo(
+        val active: Boolean = false,
         @SerialName("credit_expires_at") val creditExpiresAt: Long = 0,
     )
 

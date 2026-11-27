@@ -4,7 +4,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -13,6 +15,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -21,6 +26,7 @@ import kotlinx.serialization.builtins.serializer
 import net.obscura.lib.util.Logger
 import net.obscura.vpnclientapp.activities.MainActivity
 import net.obscura.vpnclientapp.client.AccountIdUtils
+import net.obscura.vpnclientapp.client.CachedExitList
 import net.obscura.vpnclientapp.client.CachedList
 import net.obscura.vpnclientapp.client.CoreStatus
 import net.obscura.vpnclientapp.client.CoreVpnStatus
@@ -84,6 +90,7 @@ class CoreRepository(
         jobs += launchExitListLoop(owner, scope)
         jobs += launchRelayListLoop(owner, scope)
         jobs += launchStatsLoop(owner, scope)
+        jobs += launchAccountLoop(owner, scope)
         jobs += launchPurchaseUploader(owner, scope)
         jobs += scope.launch { refreshServiceStatus() }
     }
@@ -135,13 +142,14 @@ class CoreRepository(
                             """{"getExitList":{"knownVersion":${knownVersion?.let { "\"$it\"" } ?: "null"}}}""",
                             null,
                         )
-                    val list = jsonConfig.decodeFromString<CachedList<OneExit>>(raw)
+                    val list = jsonConfig.decodeFromString<CachedExitList>(raw)
                     knownVersion = list.version
-                    _exits.value = ListLoadState.Ready(list.value)
+                    _exits.value = ListLoadState.Ready(list.value.exits)
                 }
                     .onFailure { e ->
                         if (e is CancellationException) throw e
                         if (_exits.value is ListLoadState.Loading) {
+                            log.warn("failed to load the exit list: ${e.message}", "Ex4mLd7q")
                             _exits.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
                         }
                         delay(3.seconds)
@@ -165,6 +173,7 @@ class CoreRepository(
                     .onFailure { e ->
                         if (e is CancellationException) throw e
                         if (_relays.value is ListLoadState.Loading) {
+                            log.warn("failed to load the relay list: ${e.message}", "Rl5yLd2w")
                             _relays.value = ListLoadState.Error((e as? ErrorCodeException)?.errorCode ?: "apiError")
                         }
                         delay(3.seconds)
@@ -182,6 +191,10 @@ class CoreRepository(
                         val raw = invokeFfi("""{"getTrafficStats":{}}""", 5_000L)
                         _trafficStats.value = jsonConfig.decodeFromString<TrafficStats>(raw)
                     }
+                        .onFailure { e ->
+                            if (e is CancellationException) throw e
+                            log.warn("failed to read traffic stats: ${e.message}", "Ts3kRd8v")
+                        }
                 } else {
                     _trafficStats.value = null
                 }
@@ -338,8 +351,36 @@ class CoreRepository(
         logout()
     }
 
-    suspend fun refreshAccountInfo() {
-        runCatching { invokeFfi("""{"apiGetAccountInfo":{}}""", 30_000L) }
+    /** Rust stores the answer in the status (`account`), which is what the screens read. */
+    suspend fun refreshAccountInfo(): Boolean =
+        try {
+            invokeFfi("""{"apiGetAccountInfo":{}}""", 30_000L)
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            log.warn("failed to load account info: ${e.message}", "Ac7nTf3k")
+            false
+        }
+
+    /**
+     * Rust only fetches the account when asked, so without this `account` stays empty after login ("Validating
+     * Account..." for ever). Like the desktop UI: at once when logged in, then every 12 hours, every minute while a new
+     * account waits for its first payment, and 30 seconds after a failure.
+     */
+    private fun launchAccountLoop(owner: LifecycleOwner, scope: CoroutineScope): Job = scope.launch {
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            _status
+                .map { s -> if (s?.accountId == null) null else s.inNewAccountFlow }
+                .distinctUntilChanged()
+                .collectLatest { newAccountFlow ->
+                    if (newAccountFlow == null) return@collectLatest
+                    while (isActive) {
+                        val period = if (newAccountFlow) 1.minutes else 12.hours
+                        delay(if (refreshAccountInfo()) period else 30.seconds)
+                    }
+                }
+        }
     }
 
     suspend fun refreshServiceStatus() {

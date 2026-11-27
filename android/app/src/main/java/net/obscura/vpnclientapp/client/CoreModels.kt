@@ -1,5 +1,7 @@
 package net.obscura.vpnclientapp.client
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -79,12 +81,17 @@ data class CountryRef(
     @SerialName("country_code") val countryCode: String,
 )
 
+/**
+ * A Rust enum, externally tagged: exactly one field is set and only that one may be sent, since `jsonConfig` writes
+ * defaults and Rust rejects `{"any":{},"exit":null,...}`.
+ */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ExitSelector(
-    val any: kotlinx.serialization.json.JsonObject? = null,
-    val exit: ExitIdRef? = null,
-    val country: CountryRef? = null,
-    val city: CityCode? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val any: kotlinx.serialization.json.JsonObject? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val exit: ExitIdRef? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val country: CountryRef? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val city: CityCode? = null,
 ) {
     companion object {
         val Any = ExitSelector(any = kotlinx.serialization.json.JsonObject(emptyMap()))
@@ -97,12 +104,17 @@ data class ExitSelector(
     }
 }
 
+/**
+ * A Rust enum, externally tagged: exactly one field is set and only that one may be sent, since `jsonConfig` writes
+ * defaults and Rust rejects `{"any":{},"relay":null,...}`.
+ */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class RelaySelector(
-    val any: kotlinx.serialization.json.JsonObject? = null,
-    val relay: ExitIdRef? = null,
-    val country: CountryRef? = null,
-    val city: CityCode? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val any: kotlinx.serialization.json.JsonObject? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val relay: ExitIdRef? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val country: CountryRef? = null,
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val city: CityCode? = null,
 ) {
     companion object {
         val Any = RelaySelector(any = kotlinx.serialization.json.JsonObject(emptyMap()))

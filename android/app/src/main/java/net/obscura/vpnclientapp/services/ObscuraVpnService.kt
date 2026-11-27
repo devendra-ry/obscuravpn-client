@@ -24,11 +24,15 @@ import android.os.PowerManager
 import android.system.OsConstants
 import java.util.concurrent.CompletableFuture
 import kotlin.concurrent.Volatile
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import net.obscura.lib.util.Logger
 import net.obscura.vpnclientapp.BuildConfig
 import net.obscura.vpnclientapp.client.ManagerCmd
 import net.obscura.vpnclientapp.client.ManagerCmdOk
 import net.obscura.vpnclientapp.client.RustFfi
+import net.obscura.vpnclientapp.client.TunnelArgs
 import net.obscura.vpnclientapp.client.jsonConfig
 import net.obscura.vpnclientapp.ui.JsonFfiResults
 import org.json.JSONArray
@@ -505,15 +509,23 @@ class ObscuraVpnService : VpnService() {
         CompletableFuture<String>().also {
             rustFfi.jsonFfi(
                 jsonConfig.encodeToString(
-                    ManagerCmd.SetTunnelArgs(
-                        args = exit?.let { raw -> jsonConfig.decodeFromString(raw) },
-                        active = active,
-                    ),
+                    ManagerCmd.SetTunnelArgs(args = exit?.let(::normalizedTunnelArgs), active = active),
                 ),
                 it,
             )
         }
     }
+
+    /**
+     * The args JSON round-trips through [TunnelArgs], so one that older versions stored (with `"exit":null` next to
+     * `"any":{}`, which Rust rejects) is sent in today's form. Unreadable args are dropped: Rust then keeps its stored
+     * args, which beats crashing the service on every start.
+     */
+    private fun normalizedTunnelArgs(raw: String): JsonObject? = runCatching {
+        jsonConfig.encodeToJsonElement(jsonConfig.decodeFromString<TunnelArgs>(raw)).jsonObject
+    }
+        .onFailure { log.error("dropping unreadable tunnel args", "Ta9rGs4n", it) }
+        .getOrNull()
 
     private fun stopTunnelFromUser() {
         restoreStore.setWantConnected(false, null)
